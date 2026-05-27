@@ -1,0 +1,78 @@
+# suppliers.txt — Dental supplier configuration
+# Client edits this file to add/remove suppliers — no code changes needed.
+#
+# Format: INI-style sections. Each [section] = one supplier.
+# Fields:
+#   search_url  = search URL with {query} placeholder
+#   priority    = lower = searched first (Net32 = 1 as aggregator)
+#   active      = true | false
+
+[net32]
+search_url = https://www.net32.com/search#!?t=1&m=1&q={query}
+priority   = 1
+active     = true
+
+[crazy_dental]
+search_url = https://www.crazydentalprices.com/search?q={query}&type=product
+priority   = 2
+active     = true
+
+[anson_dental]
+search_url = https://ansondental.com/search?q={query}&type=product
+priority   = 3
+active     = true
+
+[mvp_dental]
+search_url = https://mvpdental.com/search?q={query}&type=product
+priority   = 4
+active     = true
+
+[pricenex]
+search_url = https://www.pricenex.com/search-result/?search_query={query}
+priority   = 5
+active     = true
+
+[tdsc]
+search_url = https://www.tdsc.com/search?q={query}&type=product
+priority   = 6
+active     = true
+
+[safco_dental]
+search_url = https://www.safcodental.com/catalogsearch/result/?q={query}
+priority   = 7
+active     = true
+
+[dental_city]
+search_url = https://www.dentalcity.com/search?q={query}
+priority   = 8
+active     = true
+
+[optimus_dental]
+search_url = https://www.optimusdentalsupply.com/search.php?search_query={query}
+priority   = 9
+active     = true
+
+[medex_supply]
+search_url = https://medexsupply.com/search-results-page?q={query}
+priority   = 10
+active     = true
+
+[my_dds_supply]
+search_url = https://myddssupply.com/search?q={query}&type=product
+priority   = 11
+active     = true
+
+[pairay_dental]
+search_url = https://pairaydental.com/search?q={query}&type=product
+priority   = 12
+active     = true
+
+[artcraft_dental]
+search_url = https://artcraftdental.com/search?q={query}&type=product
+priority   = 13
+active     = true
+
+[az_dental]
+search_url = https://azdental.com/catalogsearch/result/?q={query}
+priority   = 14
+active     = true

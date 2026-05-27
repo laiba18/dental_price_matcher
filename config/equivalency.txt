@@ -1,0 +1,66 @@
+# equivalency.txt — Maps Henry Schein products to equivalent alternatives.
+# Client edits this file directly — no code changes needed.
+#
+# Format (pipe-delimited):
+#   schein_sku | equiv_product_name | equiv_brand | equiv_supplier | category | confidence | notes
+#
+# confidence values:
+#   exact  = same product, different brand/channel; straightforward substitution
+#   close  = same category, compatible specs, minor differences; likely acceptable
+#   possible = related product; requires client review before acting
+#
+# Only "exact" and "close" appear on the Alternate Purchase List.
+# "possible" goes to the evidence file only.
+#
+# Lines starting with # are comments and are ignored.
+
+# ─── Composites ────────────────────────────────────────────────────────────────
+2222233 | Filtek Supreme Ultra A2 HV Compule | 3M | net32 | composite resin | close | Same viscosity and shade family; clinically interchangeable in most cases
+2222237 | Filtek Supreme Ultra A3 HV Compule | 3M | net32 | composite resin | close | Same viscosity and shade family; clinically interchangeable in most cases
+
+# ─── Bonding Agents ────────────────────────────────────────────────────────────
+1336643 | Scotchbond Universal Plus | 3M | dental_city | adhesive | close | Universal adhesive; compatible protocol; same generation
+
+# ─── Cements ──────────────────────────────────────────────────────────────────
+# 7262733 | RelyX Unicem 2 | 3M | net32 | resin cement | close | Self-adhesive resin cement; compatible indications
+
+# ─── Gloves ───────────────────────────────────────────────────────────────────
+# 1126830 | Cranberry Nitrile Gloves S 300/Bx | Cranberry | mvp_dental | nitrile gloves | exact | Same spec nitrile glove, lower price channel
+
+# ─── Files ────────────────────────────────────────────────────────────────────
+# 1231093 | K-Files 25mm #06 6/Bx | Mani | net32 | endodontic file | close | ISO standard file; same size and taper
+
+# ─── Order 2 equivalencies ────────────────────────────────────────────────────
+
+# Topical anesthetic
+5700360 | Topicale Topical Anesthetic Strawberry 1oz | 3M Espe | net32 | topical anesthetic | close | Same active benzocaine formula; equivalent flavor and concentration; same 1oz jar
+
+# Mixing tips
+1126863 | Heraeus Mixpac Mixing Tips Yellow 4.2mm | Kulzer | safco_dental | mixing tips | close | Same 4.2mm yellow mixing tip spec; compatible with most VPS impression guns
+
+# Floss
+3250497 | Oral-B Glide Pro-Health Floss Unflavored 40m | Oral-B | net32 | dental floss | exact | Same Oral-B Glide product line; 160m refill = 2×40m rolls; identical product
+
+# Fluoride treatment
+7772551 | Colgate PreviDent 5000 Booster 1.1% Fluoride | Colgate | dental_city | fluoride treatment | close | Equivalent high-fluoride treatment; same 1.1% NaF concentration; clinically interchangeable
+
+# Prophy angles
+5703169 | Dentsply Nupro Prophy Angle Soft Short 500/Bx | Dentsply | tdsc | prophy angle | close | Same soft cup, short neck spec; gray color identical; clinically interchangeable
+
+# Mixing tips (fine)
+2906663 | Luxatemp Mixing Tips Fine 25/Pk | DMG | crazy_dental | mixing tips | exact | Same Luxatemp brand fine mixing tips; compatible with Luxatemp cartridges
+
+# Barrier film
+1469109 | Defend+ Barrier Film 4x6 1200/Bx | Mydent | net32 | barrier film | exact | Same 4x6 inch size, 1200-count box; identical blue polyethylene barrier film spec
+
+# Nitrous oxide mask
+1459489 | Porter Silhouette Nasal Mask Medium | Porter | safco_dental | nasal mask | exact | Same Porter Silhouette mask; medium size; 12-pack identical to Schein offering
+
+# Syringes
+5701400 | Luer-Lock Syringe 3cc 100/Bx | Becton Dickinson | medex_supply | syringe | close | BD Luer-Lock 3cc; same spec; 100/box; non-sterile equivalent
+
+# Fissure sealant
+7770371 | 3M Clinpro Sealant Refill 1.2mL | 3M | net32 | fissure sealant | exact | Same 3M Clinpro brand sealant refill; 1.2mL syringe; identical product
+
+# Evacuation cleaner
+3120099 | Purevac Evacuation System Cleaner 5L | Durr Dental | net32 | evacuation cleaner | exact | Same Purevac brand 5-liter evacuation cleaner

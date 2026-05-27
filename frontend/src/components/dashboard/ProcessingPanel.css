@@ -1,0 +1,121 @@
+.processing-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.processing-panel__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  transition: all var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+
+.step-item--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.step-item--done {
+  border-color: #a7f3d0;
+  background: var(--color-success-bg);
+}
+
+.step-item__indicator {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  background: var(--color-border);
+  color: var(--color-text-muted);
+  transition: all var(--transition);
+}
+
+.step-item--active .step-item__indicator {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.step-item--done .step-item__indicator {
+  background: var(--color-success);
+  color: #fff;
+}
+
+.step-item__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-item__name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-navy);
+}
+
+.step-item__desc {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.step-item--active .step-item__desc {
+  color: var(--color-primary-dark);
+}
+
+.step-item__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  animation: pulse 1.2s ease infinite;
+  flex-shrink: 0;
+}
+
+.processing-panel__warnings {
+  padding: 12px 16px;
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--color-warning);
+}
+
+.processing-panel__warnings p + p {
+  margin-top: 4px;
+}
+
+.processing-panel__log {
+  background: #0f172a;
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.processing-panel__log-line {
+  color: #86efac;
+}
