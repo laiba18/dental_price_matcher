@@ -36,19 +36,30 @@ OUTPUT_DIR = Path("outputs")
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
+def _cors_origins() -> list[str]:
+    origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5500",
+        "null",
+    ]
+    primary = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
+    if primary:
+        origins.append(primary)
+    extra = os.getenv("ALLOWED_ORIGINS", "")
+    for origin in extra.split(","):
+        origin = origin.strip()
+        if origin:
+            origins.append(origin)
+    return list(dict.fromkeys(origins))
+
 
 app = FastAPI(title="Dental Supply Price Intelligence", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        ALLOWED_ORIGIN,
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5500",
-        "null",
-    ],
+    allow_origins=_cors_origins(),
+    allow_origin_regex=r"https://([a-z0-9-]+\.)*(vercel\.app|netlify\.app)$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
