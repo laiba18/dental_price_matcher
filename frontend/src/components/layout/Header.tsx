@@ -1,6 +1,5 @@
 import { ReactNode } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { useBackendStatus } from "../../hooks/useBackendStatus";
 import { Button } from "../ui/Button";
 import "./Header.css";
 
@@ -10,7 +9,6 @@ interface HeaderProps {
 
 export function Header({ children }: HeaderProps) {
   const { user, logout } = useAuth();
-  const { status, version } = useBackendStatus();
 
   return (
     <header className="app-header">
@@ -36,12 +34,6 @@ export function Header({ children }: HeaderProps) {
 
         <div className="app-header__actions">
           {children}
-          <div className={`app-header__status app-header__status--${status}`}>
-            <span className="app-header__status-dot" aria-hidden="true" />
-            {status === "checking" && "Connecting..."}
-            {status === "online" && `Backend v${version ?? "5.0.0"}`}
-            {status === "offline" && "Backend offline"}
-          </div>
           {user && (
             <div className="app-header__user">
               <span className="app-header__avatar">{user.name.charAt(0)}</span>

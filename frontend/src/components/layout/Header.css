@@ -40,40 +40,6 @@
   margin-top: 1px;
 }
 
-.app-header__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.08);
-  white-space: nowrap;
-}
-
-.app-header__status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.45);
-  flex-shrink: 0;
-}
-
-.app-header__status--online .app-header__status-dot {
-  background: #34d399;
-  box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.18);
-}
-
-.app-header__status--offline .app-header__status-dot {
-  background: #f87171;
-  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.18);
-}
-
-.app-header__status--checking .app-header__status-dot {
-  animation: pulse 1.2s ease infinite;
-}
-
 .app-header__actions {
   display: flex;
   align-items: center;
@@ -85,8 +51,6 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-left: 12px;
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .app-header__avatar {
