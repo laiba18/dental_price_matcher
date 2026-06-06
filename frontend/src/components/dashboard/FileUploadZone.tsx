@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { validatePdfFile, type AppError } from "../../utils/errors";
 import { Button } from "../ui/Button";
 import "./FileUploadZone.css";
 
@@ -6,6 +7,7 @@ interface FileUploadZoneProps {
   file: File | null;
   onFileSelect: (file: File) => void;
   onClear: () => void;
+  onValidationError?: (error: AppError) => void;
   disabled?: boolean;
 }
 
@@ -13,6 +15,7 @@ export function FileUploadZone({
   file,
   onFileSelect,
   onClear,
+  onValidationError,
   disabled = false,
 }: FileUploadZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -20,10 +23,15 @@ export function FileUploadZone({
 
   const handleFile = useCallback(
     (next: File | undefined) => {
-      if (!next || !next.name.toLowerCase().endsWith(".pdf")) return;
+      if (!next) return;
+      const validationError = validatePdfFile(next);
+      if (validationError) {
+        onValidationError?.(validationError);
+        return;
+      }
       onFileSelect(next);
     },
-    [onFileSelect],
+    [onFileSelect, onValidationError],
   );
 
   function onDrop(e: React.DragEvent) {

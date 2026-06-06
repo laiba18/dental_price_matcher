@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS orders (
     total_price   REAL,
     item_count    INTEGER,
     status        TEXT    NOT NULL DEFAULT 'pending',
+    error_message TEXT,
     output_price_match      TEXT,
     output_alternate        TEXT,
     output_evidence         TEXT,
@@ -130,6 +131,11 @@ async def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+        # Migration for existing databases
+        cols = await db.execute_fetchall("PRAGMA table_info(orders)")
+        col_names = {row[1] for row in cols}
+        if "error_message" not in col_names:
+            await db.execute("ALTER TABLE orders ADD COLUMN error_message TEXT")
         await db.commit()
 
 

@@ -66,6 +66,59 @@ app.add_middleware(
 
 _jobs: dict[str, dict] = {}
 
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+async def _mark_order_failed(
+    order_id: int | None,
+    filename: str,
+    file_hash: str,
+    error_message: str,
+) -> int | None:
+    """Persist failed status so the order appears in history."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if order_id:
+            await db.execute(
+                "UPDATE orders SET status='failed', error_message=? WHERE id=?",
+                (error_message, order_id),
+            )
+            await db.commit()
+            return order_id
+
+        cur = await db.execute(
+            """INSERT INTO orders
+               (filename, file_hash, status, error_message, item_count)
+               VALUES (?, ?, 'failed', ?, 0)
+               ON CONFLICT(file_hash) DO UPDATE SET
+                 status='failed',
+                 error_message=excluded.error_message,
+                 created_at=datetime('now')""",
+            (filename, file_hash, error_message),
+        )
+        await db.commit()
+        if cur.lastrowid:
+            return cur.lastrowid
+        row = await db.execute_fetchall(
+            "SELECT id FROM orders WHERE file_hash=?", (file_hash,)
+        )
+        return row[0][0] if row else None
+
+
+def _fail_job(
+    job_id: str,
+    message: str,
+    code: str = "PROCESSING_FAILED",
+    order_id: int | None = None,
+):
+    emit_data: dict = {"message": message, "code": code}
+    if order_id:
+        emit_data["order_id"] = order_id
+    _jobs[job_id]["events"].append({"event": "error", "data": emit_data, "ts": time.time()})
+    _jobs[job_id]["status"] = "failed"
+    _jobs[job_id]["error"] = message
+    if order_id:
+        _jobs[job_id]["order_id"] = order_id
+
 
 @app.on_event("startup")
 async def startup():
@@ -77,6 +130,9 @@ async def run_pipeline(job_id: str, file_path: Path, original_filename: str):
     def emit(event: str, data: dict):
         _jobs[job_id]["events"].append({"event": event, "data": data, "ts": time.time()})
 
+    order_id: int | None = None
+    file_hash = hash_file(file_path)
+
     try:
         # ── Step 1: Extract PDF ───────────────────────────────────────────────
         emit("progress", {"step": 1, "pct": 5, "label": "Reading and extracting PDF..."})
@@ -84,16 +140,16 @@ async def run_pipeline(job_id: str, file_path: Path, original_filename: str):
         try:
             order = extract(file_path)
         except Exception as e:
-            emit("error", {"message": f"PDF extraction failed: {e}"})
-            _jobs[job_id]["status"] = "failed"
+            msg = f"PDF extraction failed: {e}"
+            order_id = await _mark_order_failed(None, original_filename, file_hash, msg)
+            _fail_job(job_id, msg, "PDF_EXTRACTION_FAILED", order_id)
             return
 
         if not order.line_items:
-            emit("error", {"message": "No line items found. Check this is a Henry Schein ORDER PDF."})
-            _jobs[job_id]["status"] = "failed"
+            msg = "No line items found. Please upload a valid Henry Schein order confirmation PDF."
+            order_id = await _mark_order_failed(None, original_filename, file_hash, msg)
+            _fail_job(job_id, msg, "NO_LINE_ITEMS", order_id)
             return
-
-        file_hash = hash_file(file_path)
         total_label = f"${order.total_price:,.2f}" if order.total_price else "N/A"
         emit("progress", {
             "step": 1, "pct": 15,
@@ -122,6 +178,7 @@ async def run_pipeline(job_id: str, file_path: Path, original_filename: str):
                  order.patient_name, order.total_price, len(order.line_items)),
             )
             order_id = cur.lastrowid
+            _jobs[job_id]["order_id"] = order_id
 
             for item in order.line_items:
                 await db.execute(
@@ -136,17 +193,34 @@ async def run_pipeline(job_id: str, file_path: Path, original_filename: str):
             await db.commit()
 
         # ── Step 2: Intelligence (parse + search + price) ──────────────────────
+        item_count = len(order.line_items)
         emit("progress", {
-            "step": 2, "pct": 20,
-            "label": (
-                f"Jina web search for {len(order.line_items)} items "
-                f"(exact product name + fallback queries)..."
+            "step": 2,
+            "pct": 20,
+            "label": f"Starting price search for {item_count} line items…",
+            "item_index": 0,
+            "item_total": item_count,
+            "substep": "starting",
+            "detail": (
+                f"Each item will be parsed, searched on the web, and scraped for prices. "
+                f"This step covers {item_count} products and usually takes the longest."
             ),
+            "filename": original_filename,
+            "order_ref": order.order_ref,
+            "order_id": order_id,
+            "order_date": order.order_date,
         })
 
         intel = IntelligenceLayer()
         order.line_items, raw_supplier_results, sweep_results, search_queries = await intel.process(
-            order.line_items, emit=emit
+            order.line_items,
+            emit=emit,
+            order_meta={
+                "filename": original_filename,
+                "order_ref": order.order_ref,
+                "order_id": order_id,
+                "order_date": order.order_date,
+            },
         )
 
         high_conf = sum(
@@ -300,19 +374,35 @@ async def run_pipeline(job_id: str, file_path: Path, original_filename: str):
         _jobs[job_id]["result"] = result
 
     except Exception as e:
-        emit("error", {"message": f"Pipeline error: {e}"})
-        _jobs[job_id]["status"] = "failed"
-        raise
+        msg = f"Unexpected processing error: {e}"
+        order_id = await _mark_order_failed(
+            order_id, original_filename, file_hash, msg
+        )
+        _fail_job(job_id, msg, "UNEXPECTED_ERROR", order_id)
 
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are accepted.")
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "running", "events": [], "result": None}
-    save_path = UPLOAD_DIR / f"{job_id}_{file.filename}"
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, detail="Only PDF files are accepted.")
+
     content = await file.read()
+    if not content:
+        raise HTTPException(400, detail="The uploaded file is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            400,
+            detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
+    if not content[:5].startswith(b"%PDF"):
+        raise HTTPException(
+            400,
+            detail="Invalid or corrupted PDF file. Please upload a valid PDF document.",
+        )
+
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running", "events": [], "result": None, "order_id": None}
+    save_path = UPLOAD_DIR / f"{job_id}_{file.filename}"
     with open(save_path, "wb") as f:
         f.write(content)
     asyncio.create_task(run_pipeline(job_id, save_path, file.filename))
@@ -375,7 +465,7 @@ async def get_history():
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """SELECT id, filename, order_ref, order_date, patient_name,
-                      total_price, item_count, status,
+                      total_price, item_count, status, error_message,
                       output_price_match, output_alternate, output_evidence, created_at
                FROM orders ORDER BY created_at DESC LIMIT 50"""
         )

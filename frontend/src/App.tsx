@@ -1,7 +1,9 @@
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ToastProvider } from "./context/ToastContext";
 import { LoginPage } from "./components/login/LoginPage";
 import { AppShell } from "./components/layout/AppShell";
 import { Dashboard } from "./components/dashboard/Dashboard";
+import { ToastContainer } from "./components/ui/Toast";
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -19,8 +21,11 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <AppContent />
+        <ToastContainer />
+      </AuthProvider>
+    </ToastProvider>
   );
 }

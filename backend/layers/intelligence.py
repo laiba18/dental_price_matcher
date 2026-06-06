@@ -824,6 +824,19 @@ def _fc_response_markdown(result) -> str | None:
     return getattr(result, "markdown", None) or None
 
 
+async def _heartbeat_while(coro, on_tick, interval: float = 3.0):
+    """Run *coro* while calling *on_tick(n, elapsed_secs)* every *interval* seconds."""
+    task = asyncio.create_task(coro)
+    tick = 0
+    while not task.done():
+        done_set, _ = await asyncio.wait({task}, timeout=interval)
+        if task in done_set:
+            break
+        tick += 1
+        on_tick(tick, tick * interval)
+    return await task
+
+
 async def _fc_search(fc: AsyncV1FirecrawlApp, query: str, log) -> list[dict]:
     """
     Firecrawl search — returns up to 5 results with title, URL, description.
@@ -1016,6 +1029,11 @@ async def _search_and_scrape_item(
     item: LineItem,
     parsed: dict,
     log,
+    *,
+    emit_progress=None,
+    item_index: int = 1,
+    item_total: int = 1,
+    item_pct=None,
 ) -> tuple[list[PriceResult], list[PriceResult], str, str]:
     """
     File 1 — exact/almost-exact input search → up to 3 verified prices
@@ -1027,6 +1045,19 @@ async def _search_and_scrape_item(
     fallback_qs    = _fallback_queries(parsed, item.description_raw)
     fallback_query = fallback_qs[0] if fallback_qs else clean_query
     seen_urls: set[str] = set()
+
+    def progress(substep: str, label: str, phase: float, detail: str = ""):
+        if not emit_progress or not item_pct:
+            return
+        emit_progress({
+            "step": 2,
+            "pct": item_pct(phase),
+            "label": f"Item {item_index}/{item_total}: {label}",
+            "item_index": item_index,
+            "item_total": item_total,
+            "substep": substep,
+            "detail": detail or label,
+        })
 
     schein_pack_qty = None
     if item.description_parsed and item.description_parsed.pack_qty:
@@ -1057,8 +1088,23 @@ async def _search_and_scrape_item(
 
         seen_urls.add(url)
 
+        host = url.split("/")[2] if "/" in url else url
+        progress(
+            "scrape",
+            f"Reading product page on {host}…",
+            0.45 + 0.35 * min(len(seen_urls), 5) / 5,
+            f"Scraping supplier page: {url[:80]}",
+        )
         log("info", f"   📄 Scraping: {url}")
-        page_content = await _fc_scrape(fc, url, query, log)
+        page_content = await _heartbeat_while(
+            _fc_scrape(fc, url, query, log),
+            lambda tick, secs: progress(
+                "scrape",
+                f"Reading {host} ({int(secs)}s)…",
+                0.45 + 0.35 * min(len(seen_urls), 5) / 5 + min(0.02 * tick, 0.04),
+                f"Scraping supplier page: {url[:80]}",
+            ),
+        )
         content = page_content or snippet
         if not page_content and not snippet:
             log("info", f"   ⛔ Skipped (page unavailable): \"{title[:50]}\"")
@@ -1066,11 +1112,26 @@ async def _search_and_scrape_item(
 
         # Score against full input for File 1, parsed query for File 2
         score_query = item.description_raw if not is_fallback else query
-        return _build_price_result(
+        result = _build_price_result(
             item, url, title, content, score_query, source,
             item.unit_price, schein_pack_qty, parsed,
             is_fallback=is_fallback,
         )
+        if result and result.price is not None:
+            progress(
+                "price_found",
+                f"Found ${result.price:.2f} from {result.supplier}",
+                0.55 + 0.25 * min(len(exact_pool), 3) / 3,
+                f"Price ${result.price:.2f} on {result.supplier} — {title[:50]}",
+            )
+        return result
+
+    progress(
+        "search",
+        "Building search queries from product description…",
+        0.38,
+        f"Prepared {len(search_queries)} search queries for this item",
+    )
 
     for i, q in enumerate(search_queries):
         if _file1_search_complete(exact_pool, item):
@@ -1081,11 +1142,36 @@ async def _search_and_scrape_item(
             label = "Exact search (cleaned)"
         else:
             label = "Retry"
+        progress(
+            "search",
+            f"Web search — {label}…",
+            0.40 + 0.30 * (i / max(len(search_queries), 1)),
+            f'Searching Google via Firecrawl: "{q[:70]}"',
+        )
         log("info", f"   🔍 {label}: \"{q[:70]}\"")
         if i > 0:
             await asyncio.sleep(_SEARCH_DELAY)
-        hits = await _fc_search(fc, q, log)
+        search_phase = 0.40 + 0.30 * (i / max(len(search_queries), 1))
+
+        async def _do_search():
+            return await _fc_search(fc, q, log)
+
+        hits = await _heartbeat_while(
+            _do_search(),
+            lambda tick, secs: progress(
+                "search",
+                f"Firecrawl searching — {label} ({int(secs)}s)…",
+                search_phase + min(0.02 * tick, 0.06),
+                f'Waiting for Firecrawl API — query: "{q[:60]}"',
+            ),
+        )
         log("info", f"   ✓ {len(hits)} search results")
+        progress(
+            "search",
+            f"Reviewing {len(hits)} search results…",
+            0.42 + 0.30 * (i / max(len(search_queries), 1)),
+            f"Found {len(hits)} pages — checking top results for prices",
+        )
 
         sem = asyncio.Semaphore(3)
 
@@ -1111,9 +1197,21 @@ async def _search_and_scrape_item(
     fallback_results: list[PriceResult] = []
     if not file1_results:
         log("info", "   ↪ No exact matches — parsed-query alternate search...")
+        progress(
+            "search",
+            "No exact match — trying alternate search queries…",
+            0.75,
+            "Exact search returned nothing; running fallback parsed-query search",
+        )
         for fq in fallback_qs:
             if len(fallback_results) >= _EXACT_TARGET:
                 break
+            progress(
+                "search",
+                "Alternate supplier search…",
+                0.78,
+                f'Fallback search: "{fq[:70]}"',
+            )
             log("info", f"   🔍 Alternate: \"{fq}\"")
             await asyncio.sleep(_SEARCH_DELAY)
             fb_hits = await _fc_search(fc, fq, log)
@@ -1140,6 +1238,7 @@ class IntelligenceLayer:
         self,
         line_items: list[LineItem],
         emit=None,
+        order_meta: dict | None = None,
     ) -> tuple[
         list[LineItem],
         dict[int, list[PriceResult]],
@@ -1175,11 +1274,61 @@ class IntelligenceLayer:
 
         valid_pd = ParsedDescription.model_fields.keys()
 
+        def item_pct(idx: int, phase: float) -> int:
+            """Map item progress into step-2 range 20–71%. phase is 0.0–1.0 within item."""
+            frac = (idx + phase) / max(total, 1)
+            return min(71, 20 + int(frac * 52))
+
+        def emit_progress(data: dict):
+            if order_meta:
+                data = {**order_meta, **data}
+            if emit:
+                emit("progress", data)
+
+        # Immediately signal first item so UI moves past 20%
+        if total > 0:
+            emit_progress({
+                "step": 2,
+                "pct": 21,
+                "label": f"Item 1/{total}: Starting price intelligence…",
+                "item_index": 1,
+                "item_total": total,
+                "substep": "starting",
+                "detail": f"Beginning analysis of {total} line items from this order",
+            })
+
         for idx, item in enumerate(line_items):
+            product_label = item.description_raw[:55]
+
+            emit_progress({
+                "step": 2,
+                "pct": item_pct(idx, 0.05),
+                "label": f"Item {idx + 1}/{total}: Parsing description with AI…",
+                "item_index": idx + 1,
+                "item_total": total,
+                "substep": "parse",
+                "detail": f"Groq AI is reading: \"{product_label}\"",
+                "item_description": product_label,
+            })
             log("info", f"━━ Item {idx+1}/{total}: {item.description_raw[:65]}")
 
-            # Parse description
-            parsed = await _parse_description(item.description_raw, log)
+            # Parse description (Groq — can take 10–20s)
+            async def _do_parse():
+                return await _parse_description(item.description_raw, log)
+
+            parsed = await _heartbeat_while(
+                _do_parse(),
+                lambda tick, secs: emit_progress({
+                    "step": 2,
+                    "pct": min(item_pct(idx, 0.05 + min(0.08, 0.02 * tick)), item_pct(idx, 0.18)),
+                    "label": f"Item {idx + 1}/{total}: AI parsing description ({int(secs)}s)…",
+                    "item_index": idx + 1,
+                    "item_total": total,
+                    "substep": "parse",
+                    "detail": f"Groq AI reading: \"{product_label}\"",
+                    "item_description": product_label,
+                }),
+            )
             item.description_parsed = ParsedDescription(
                 **{k: v for k, v in parsed.items() if k in valid_pd}
             )
@@ -1189,12 +1338,67 @@ class IntelligenceLayer:
                 f"product={pd.product_name[:25]}"                 if pd.product_name else None,
                 f"pack={int(pd.pack_qty)}{pd.pack_unit or ''}"    if pd.pack_qty     else None,
             ] if p]
-            log("info", f"   📐 {', '.join(parts) or 'description only'}")
+            parse_summary = ", ".join(parts) or "description only"
+            log("info", f"   📐 {parse_summary}")
+
+            emit_progress({
+                "step": 2,
+                "pct": item_pct(idx, 0.20),
+                "label": (
+                    f"Item {idx + 1}/{total}: Parsed — "
+                    f"{pd.product_name[:35] if pd.product_name else 'searching by description'}"
+                ),
+                "item_index": idx + 1,
+                "item_total": total,
+                "substep": "parsed",
+                "detail": f"Identified: {parse_summary}",
+                "item_description": product_label,
+            })
+
+            emit_progress({
+                "step": 2,
+                "pct": item_pct(idx, 0.30),
+                "label": f"Item {idx + 1}/{total}: Searching supplier websites…",
+                "item_index": idx + 1,
+                "item_total": total,
+                "substep": "search",
+                "detail": (
+                    f"Firecrawl will search the web and scrape product pages for "
+                    f"\"{pd.product_name or product_label[:40]}\""
+                ),
+                "item_description": product_label,
+            })
 
             # Search + scrape
             exact_results, fallback_results, exact_q, fallback_q = \
-                await _search_and_scrape_item(fc, item, parsed, log)
+                await _search_and_scrape_item(
+                    fc, item, parsed, log,
+                    emit_progress=emit_progress,
+                    item_index=idx + 1,
+                    item_total=total,
+                    item_pct=lambda phase: item_pct(idx, phase),
+                )
             search_queries[item.line_number] = fallback_q
+
+            price_count = len(exact_results) + len(fallback_results)
+            emit_progress({
+                "step": 2,
+                "pct": item_pct(idx, 1.0),
+                "label": (
+                    f"Item {idx + 1}/{total}: "
+                    f"{'✓ ' + str(price_count) + ' price(s) found' if price_count else '✗ No prices found'}"
+                ),
+                "item_index": idx + 1,
+                "item_total": total,
+                "substep": "done" if price_count else "no_results",
+                "detail": (
+                    f"Finished item {idx + 1}: {price_count} verified price(s)"
+                    if price_count
+                    else f"No public prices found for item {idx + 1}"
+                ),
+                "item_description": product_label,
+                "prices_found": price_count,
+            })
 
             # Log all results
             for pr in exact_results:

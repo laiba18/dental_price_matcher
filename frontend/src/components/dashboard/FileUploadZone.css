@@ -1,35 +1,59 @@
+.upload-zone {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .upload-zone__input {
   display: none;
 }
 
 .upload-zone__drop {
-  border: 2px dashed var(--color-border-strong);
-  border-radius: var(--radius-lg);
-  padding: 48px 24px;
+  flex: 1;
+  min-height: 180px;
+  border: 2px dashed #cbd5e1;
+  border-radius: var(--radius-md);
+  padding: 28px 20px;
   text-align: center;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   transition:
-    border-color var(--transition),
-    background var(--transition),
-    box-shadow var(--transition);
-  background: var(--color-surface);
+    border-color 0.25s ease,
+    background 0.25s ease,
+    box-shadow 0.25s ease;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  position: relative;
+}
+
+.upload-zone__drop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at 50% 0%, rgba(13, 148, 136, 0.06) 0%, transparent 60%);
+  pointer-events: none;
 }
 
 .upload-zone__drop:hover:not(.upload-zone__drop--disabled) {
   border-color: var(--color-primary);
-  background: var(--color-primary-light);
-  box-shadow: var(--shadow-glow);
+  background: linear-gradient(180deg, #f0fdfa 0%, #ecfdf5 100%);
+  box-shadow: 0 0 0 4px rgba(13, 148, 136, 0.1);
 }
 
 .upload-zone__drop--over {
   border-color: var(--color-primary);
-  background: var(--color-primary-light);
-  transform: scale(1.01);
+  background: linear-gradient(180deg, #ccfbf1 0%, #f0fdfa 100%);
+  border-style: solid;
+  box-shadow: 0 8px 24px rgba(13, 148, 136, 0.15);
 }
 
 .upload-zone__drop--selected {
   border-color: var(--color-success);
-  background: var(--color-success-bg);
+  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
   border-style: solid;
 }
 
@@ -40,9 +64,11 @@
 
 .upload-zone__icon {
   color: var(--color-primary);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   display: flex;
   justify-content: center;
+  position: relative;
+  z-index: 1;
 }
 
 .upload-zone__drop--selected .upload-zone__icon {
@@ -50,18 +76,25 @@
 }
 
 .upload-zone__title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--color-navy);
-  margin-bottom: 6px;
-  word-break: break-all;
+  margin-bottom: 4px;
+  word-break: break-word;
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
 }
 
 .upload-zone__hint {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--color-text-muted);
+  position: relative;
+  z-index: 1;
 }
 
 .upload-zone__clear {
-  margin-top: 12px;
+  margin-top: 8px;
+  align-self: center;
+  flex-shrink: 0;
 }
