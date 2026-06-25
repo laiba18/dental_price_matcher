@@ -3,10 +3,17 @@ import type {
   ActivityEntry,
   PipelineStepId,
   ProgressEvent,
+  QuotaAlert,
   ServiceState,
   StepStatus,
 } from "../types";
 import { PIPELINE_STEPS } from "../types";
+import {
+  mergeQuotaAlerts,
+  quotaAlertFromEvent,
+  quotaAlertFromFirecrawlSummary,
+  quotaAlertsFromError,
+} from "../quotaAlerts";
 
 const INITIAL_SERVICES: ServiceState = {
   groq: "idle",
@@ -105,8 +112,16 @@ function eventToActivity(evt: ProgressEvent): ActivityEntry | null {
         id,
         ts: evt.ts,
         service: "firecrawl",
-        message: "Firecrawl run complete",
+        message: d.exhausted ? "Firecrawl credits exhausted" : "Firecrawl run complete",
         detail: `${d.scrapes} scrapes · ${d.credits} credits`,
+      };
+    case "quota_limit":
+      return {
+        id,
+        ts: evt.ts,
+        service: "system",
+        message: String(d.message ?? "API credit limit reached"),
+        detail: d.detail ? String(d.detail) : undefined,
       };
     case "discovery_start":
       return {
@@ -181,7 +196,15 @@ function updateServices(evt: ProgressEvent, prev: ServiceState): ServiceState {
     next.firecrawl = "active";
     if (evt.data.action === "search" && evt.data.results === 0) next.firecrawl = "active";
   }
-  if (evt.event === "firecrawl_summary") next.firecrawl = "done";
+  if (evt.event === "firecrawl_summary") next.firecrawl = evt.data.exhausted ? "error" : "done";
+  if (evt.event === "quota_limit") {
+    const svc = String(evt.data.service ?? "");
+    if (svc === "firecrawl") next.firecrawl = "error";
+    if (svc === "serpapi") next.serpapi = "error";
+    if (svc === "groq" || svc === "gemini" || svc === "openai" || svc === "openrouter") {
+      next.groq = "error";
+    }
+  }
   if (evt.event === "serpapi" || evt.event === "discovery_start") next.serpapi = "active";
   if (evt.event === "pipeline_complete") {
     next.groq = next.groq === "active" ? "done" : next.groq;
@@ -250,6 +273,7 @@ export function useJobProgress() {
   const [services, setServices] = useState<ServiceState>(INITIAL_SERVICES);
   const [itemProgress, setItemProgress] = useState({ current: 0, total: 0, sku: "" });
   const [reference, setReference] = useState<string | null>(null);
+  const [quotaAlerts, setQuotaAlerts] = useState<QuotaAlert[]>([]);
 
   const reset = useCallback(() => {
     setStepStatus(initialSteps());
@@ -257,6 +281,7 @@ export function useJobProgress() {
     setServices(INITIAL_SERVICES);
     setItemProgress({ current: 0, total: 0, sku: "" });
     setReference(null);
+    setQuotaAlerts([]);
   }, []);
 
   const handleEvent = useCallback((evt: ProgressEvent) => {
@@ -277,10 +302,30 @@ export function useJobProgress() {
       setReference(String(evt.data.reference));
     }
 
+    if (evt.event === "quota_limit") {
+      setQuotaAlerts((prev) => mergeQuotaAlerts(prev, quotaAlertFromEvent(evt.data)));
+    }
+    if (evt.event === "firecrawl_summary") {
+      const summaryAlert = quotaAlertFromFirecrawlSummary(evt.data);
+      if (summaryAlert) {
+        setQuotaAlerts((prev) => mergeQuotaAlerts(prev, summaryAlert));
+      }
+    }
+
     const activity = eventToActivity(evt);
     if (activity) {
       setActivities((prev) => [activity, ...prev].slice(0, 200));
     }
+  }, []);
+
+  const ingestErrorMessage = useCallback((message: string) => {
+    const fromError = quotaAlertsFromError(message);
+    if (fromError.length === 0) return;
+    setQuotaAlerts((prev) => {
+      let next = prev;
+      for (const alert of fromError) next = mergeQuotaAlerts(next, alert);
+      return next;
+    });
   }, []);
 
   const progressPercent = (() => {
@@ -305,7 +350,9 @@ export function useJobProgress() {
     itemProgress,
     reference,
     progressPercent,
+    quotaAlerts,
     handleEvent,
+    ingestErrorMessage,
     reset,
   };
 }

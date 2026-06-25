@@ -64,6 +64,13 @@ export interface ServiceState {
   serpapi: "idle" | "active" | "done" | "error";
 }
 
+export interface QuotaAlert {
+  service: string;
+  kind: string;
+  message: string;
+  detail?: string;
+}
+
 export const PIPELINE_STEPS: PipelineStepDef[] = [
   {
     id: "upload",

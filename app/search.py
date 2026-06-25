@@ -63,11 +63,25 @@ def _mark_firecrawl_exhausted(reason: str, *, url: str = "", tag: str = "") -> N
             "First failing URL%s",
             where,
         )
+        from .jobs import emit_quota_limit
+        emit_quota_limit(
+            "firecrawl",
+            "Your Firecrawl credit limit has been reached.",
+            kind="credits",
+            detail="Web page scraping is paused — some prices may be unverified.",
+        )
     elif reason == "budget":
         fc_credit_log.warning(
             "========== FIRECRAWL SCRAPE BUDGET REACHED ==========\n"
             "Per-run cap FIRECRAWL_MAX_SCRAPES_PER_RUN=%d reached.",
             FIRECRAWL_MAX_SCRAPES,
+        )
+        from .jobs import emit_quota_limit
+        emit_quota_limit(
+            "firecrawl",
+            "The Firecrawl scrape limit for this run has been reached.",
+            kind="budget",
+            detail="Remaining pages will use cached or free-fetch data only.",
         )
 # Total Firecrawl credit budget for a run and the slice reserved exclusively
 # for the stage-3 supplier fallback (so open-web /search can't drain it all).
@@ -1019,6 +1033,13 @@ def _serpapi(params: dict) -> dict:
                       "wall. Remaining items this run will be skipped. Raise "
                       "SERPAPI_MIN_INTERVAL, lower SUPPLIER_SWEEP_MAX_SITES, or upgrade plan.",
                       SERP_FAIL_GIVEUP)
+            from .jobs import emit_quota_limit
+            emit_quota_limit(
+                "serpapi",
+                "Your SerpAPI credit limit has been reached.",
+                kind="credits",
+                detail="Product discovery will use Firecrawl and cached results instead.",
+            )
     raise last_err or RuntimeError("SerpAPI call failed")
 
 

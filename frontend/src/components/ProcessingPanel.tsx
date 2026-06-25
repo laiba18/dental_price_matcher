@@ -1,5 +1,6 @@
 import { formatDuration, formatTime } from "../api";
-import { PIPELINE_STEPS, type ActivityEntry, type ServiceState, type StepStatus } from "../types";
+import { PIPELINE_STEPS, type ActivityEntry, type QuotaAlert, type ServiceState, type StepStatus } from "../types";
+import { QuotaAlerts } from "./QuotaAlerts";
 
 interface ProcessingPanelProps {
   processing: boolean;
@@ -12,6 +13,7 @@ interface ProcessingPanelProps {
   services: ServiceState;
   itemProgress: { current: number; total: number; sku: string };
   reference: string | null;
+  quotaAlerts: QuotaAlert[];
 }
 
 const SERVICE_LABELS: Record<keyof ServiceState, string> = {
@@ -61,9 +63,11 @@ export function ProcessingPanel({
   services,
   itemProgress,
   reference,
+  quotaAlerts,
 }: ProcessingPanelProps) {
   return (
     <section className="processing-panel">
+      {quotaAlerts.length > 0 && <QuotaAlerts alerts={quotaAlerts} />}
       <div className="processing-panel__header">
         <div>
           <h2>

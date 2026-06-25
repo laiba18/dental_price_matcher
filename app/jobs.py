@@ -21,6 +21,7 @@ class Job:
     events: Queue = field(default_factory=Queue)
     result: dict | None = None
     error: str | None = None
+    quota_alerts_sent: set[str] = field(default_factory=set)
 
 
 def create_job(filename: str = "") -> str:
@@ -60,6 +61,25 @@ def emit(event: str, **data: Any) -> None:
         return
     payload = {"event": event, "data": data, "ts": time.time()}
     job.events.put(payload)
+
+
+def emit_quota_limit(
+    service: str,
+    message: str,
+    *,
+    kind: str = "credits",
+    detail: str = "",
+) -> None:
+    """Emit one user-visible quota/credit alert per service per job."""
+    job_id = current_job_id()
+    if not job_id:
+        return
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job or service in job.quota_alerts_sent:
+            return
+        job.quota_alerts_sent.add(service)
+    emit("quota_limit", service=service, kind=kind, message=message, detail=detail)
 
 
 def complete_job(job_id: str, result: dict) -> None:

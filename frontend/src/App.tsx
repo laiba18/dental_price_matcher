@@ -29,7 +29,9 @@ export default function App() {
     itemProgress,
     reference,
     progressPercent,
+    quotaAlerts,
     handleEvent,
+    ingestErrorMessage,
     reset: resetProgress,
   } = useJobProgress();
 
@@ -67,6 +69,7 @@ export default function App() {
           : msg;
 
       setError(friendly);
+      ingestErrorMessage(msg);
       await refresh();
     } finally {
       setProcessing(false);
@@ -168,8 +171,11 @@ export default function App() {
                 services={services}
                 itemProgress={itemProgress}
                 reference={reference}
+                quotaAlerts={quotaAlerts}
               />
             )}
+
+            {quotaAlerts.length > 0 && !panelVisible && <QuotaAlerts alerts={quotaAlerts} />}
 
             {error && <div className="alert alert--error">{error}</div>}
             {result && !processing && <ResultsPanel result={result} />}

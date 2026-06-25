@@ -89,9 +89,28 @@ else:
 
 from .models import OrderLineItem, PriceCandidate
 from . import db
-from .jobs import emit
+from .jobs import emit, emit_quota_limit
 
 log = logging.getLogger(__name__)
+
+_LLM_LABELS = {
+    "groq": "Groq",
+    "gemini": "Gemini",
+    "openai": "OpenAI",
+    "openrouter": "OpenRouter",
+}
+
+
+def _trip_llm_circuit_breaker(log_msg: str, *log_args) -> None:
+    _groq_cb["tripped_until"] = time.monotonic() + GROQ_CB_COOLDOWN
+    log.error(log_msg, *log_args)
+    label = _LLM_LABELS.get(LLM_PROVIDER, LLM_PROVIDER.title())
+    emit_quota_limit(
+        LLM_PROVIDER,
+        f"Your {label} API credit or rate limit has been reached.",
+        kind="rate_limit",
+        detail="AI enrichment may be reduced until the limit resets.",
+    )
 
 # Model list follows the active provider's preset, overridable by LLM_MODELS
 # (universal). The legacy GROQ_MODELS/GROQ_MODEL vars apply ONLY when the provider
@@ -487,9 +506,10 @@ def _ask_json_rotate(messages: list, est: int, max_tokens: int) -> dict:
         # every model cooling down for longer than the backoff cap → give up fast
         if MODELS and all(cooldown.get(m, 0.0) > time.monotonic() for m in MODELS):
             if max(cooldown.values()) - time.monotonic() > MAX_BACKOFF:
-                _groq_cb["tripped_until"] = time.monotonic() + GROQ_CB_COOLDOWN
-                log.error("Groq all models rate-limited (rotate) — tripping circuit "
-                          "breaker for %ss", GROQ_CB_COOLDOWN)
+                _trip_llm_circuit_breaker(
+                    "Groq all models rate-limited (rotate) — tripping circuit breaker for %ss",
+                    GROQ_CB_COOLDOWN,
+                )
                 raise RuntimeError("Groq all-models rate-limited; circuit breaker tripped")
     raise RuntimeError(f"All Groq models exhausted (rotate): {last_err}")
 
@@ -624,11 +644,13 @@ def _ask_json(prompt: str, max_tokens: int = 4000, force_model: str | None = Non
                                         "looping back to %s", model, cycle + 1,
                                         GROQ_MAX_CYCLES, MODELS[0])
                             break
-                        _groq_cb["tripped_until"] = time.monotonic() + GROQ_CB_COOLDOWN
-                        log.error("Groq exhausted after %d cycles — tripping circuit breaker "
-                                  "for %ss; calls fail fast so the run finishes (candidates "
-                                  "left for manual extraction this window)", GROQ_MAX_CYCLES,
-                                  GROQ_CB_COOLDOWN)
+                        _trip_llm_circuit_breaker(
+                            "Groq exhausted after %d cycles — tripping circuit breaker for %ss; "
+                            "calls fail fast so the run finishes (candidates left for manual "
+                            "extraction this window)",
+                            GROQ_MAX_CYCLES,
+                            GROQ_CB_COOLDOWN,
+                        )
                         raise RuntimeError("Groq all-models rate-limited; circuit breaker tripped")
                     log.warning("Groq %s rate-limited (429) — waiting %ss (attempt %d/%d)",
                                 model, round(backoff), attempt + 1, MAX_RETRIES)
