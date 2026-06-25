@@ -1,10 +1,15 @@
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-python-multipart==0.0.9
-PyMuPDF>=1.24.10
-groq>=0.9.0
-firecrawl-py>=1.0.0
-openpyxl==3.1.2
-aiosqlite==0.20.0
-python-dotenv==1.0.1
-pydantic==2.7.1
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+PyMuPDF>=1.24
+openpyxl>=3.1
+groq>=1.0
+# OpenAI SDK — only needed when LLM_PROVIDER is gemini/openai/openrouter
+# (Gemini & others expose an OpenAI-compatible endpoint the same client drives).
+openai>=1.30
+requests>=2.31
+python-multipart>=0.0.9
+python-dotenv>=1.0
+# OCR fallback (Format 2), optional:
+# pytesseract>=0.3.10
+# Pillow>=10.0

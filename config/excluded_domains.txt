@@ -1,0 +1,35 @@
+# Domains never used as price sources. One per line. Subdomains are
+# excluded automatically. Client-editable — no code changes needed.
+henryschein.com
+ebay.com
+amazon.com
+walmart.com
+alibaba.com
+aliexpress.com
+google.com
+bing.com
+pinterest.com
+facebook.com
+youtube.com
+
+# Consumer grocery / big-box / general retail — NOT dental suppliers. These
+# surface as noise (consumer Oral-B floss packs, etc.), often with inaccessible
+# or login-walled product pages, and pollute the alternate sheet. Subdomains are
+# excluded automatically, so the whole Kroger family (ralphs, kingsoopers, …) is
+# covered by their own lines below.
+target.com
+kroger.com
+ralphs.com
+kingsoopers.com
+samsclub.com
+costco.com
+cvs.com
+walgreens.com
+riteaid.com
+homedepot.com
+officedepot.com
+officesupplyinc.com
+parentgiving.com
+gosupps.com
+instacart.com
+kingpintattoosupply.com
