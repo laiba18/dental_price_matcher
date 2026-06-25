@@ -2,14 +2,20 @@ import type { OrderRunResult, ProgressEvent } from "./types";
 
 const STORAGE_KEY = "dental_api_base";
 
+function normalizeBase(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 export function getApiBase(): string {
+  const envBase = import.meta.env.VITE_API_BASE?.trim();
+  if (envBase) return normalizeBase(envBase);
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) return stored.replace(/\/+$/, "");
+  if (stored) return normalizeBase(stored);
   return "/api";
 }
 
 export function setApiBase(url: string): void {
-  localStorage.setItem(STORAGE_KEY, url.replace(/\/+$/, ""));
+  localStorage.setItem(STORAGE_KEY, normalizeBase(url));
 }
 
 export function basename(path: string): string {

@@ -61,7 +61,9 @@ export default function App() {
       const msg = err instanceof Error ? err.message : String(err);
       const friendly =
         msg.includes("Failed to fetch") || msg.includes("NetworkError")
-          ? "Could not reach the server. Make sure the backend is running on port 8000."
+          ? import.meta.env.VITE_API_BASE
+            ? "Could not reach the API server. It may be starting up — wait a moment and try again."
+            : "Could not reach the server. Make sure the backend is running on port 8000."
           : msg;
 
       setError(friendly);
@@ -147,7 +149,9 @@ export default function App() {
 
               {!apiConnected && (
                 <div className="alert alert--warn">
-                  Server is offline — start the backend, then refresh this page.
+                  {import.meta.env.VITE_API_BASE
+                    ? "API server is offline — it may be waking up on Render. Refresh in a minute."
+                    : "Server is offline — start the backend, then refresh this page."}
                 </div>
               )}
             </section>

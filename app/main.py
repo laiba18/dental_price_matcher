@@ -216,14 +216,28 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
 
 app = FastAPI(title="Dental Supply Price Intelligence", version="1.1")
 
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://dental-price-matcher.vercel.app",
+]
+
+
+def _cors_origins() -> list[str]:
+    origins = list(_DEFAULT_CORS_ORIGINS)
+    extra = os.environ.get("ALLOWED_ORIGIN", "")
+    for part in extra.split(","):
+        origin = part.strip().rstrip("/")
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
