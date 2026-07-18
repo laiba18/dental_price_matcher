@@ -32,4 +32,5 @@ officesupplyinc.com
 parentgiving.com
 gosupps.com
 instacart.com
-kingpintattoosupply.com
+# darbydental — members/VIP-only pricing, not a public street price (client 2026-07-15)
+darbydental.com

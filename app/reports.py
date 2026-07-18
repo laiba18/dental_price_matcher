@@ -22,6 +22,7 @@ Tiers: EXACT = same product · CLOSE = compatible specs · POSSIBLE = needs revi
 from __future__ import annotations
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -266,6 +267,13 @@ def _score_label(item, c: PriceCandidate) -> str:
         return f"UNVERIFIED PRICE ({score}%)"
     if getattr(c, "is_generic_equivalent", False):
         return f"GENERIC EQUIVALENT ({score}%)"
+    if _bulk_benefit(item, c):
+        return f"BULK VALUE ({score}%)"
+    # a login-rescued price with NO confirmed criteria (all None) reads oddly as
+    # "POSSIBLE (0%)" — it's an unverified public price, so label it plainly
+    if (c.match_type == "unverified" and not (c.criteria or {})
+            and c.price is not None):
+        return "UNVERIFIED"
     if _is_exact_cand(item, c):
         if getattr(c, "variant_unverified", False):
             return f"EXACT · VARIANT UNVERIFIED ({score}%)"
@@ -300,10 +308,32 @@ def _mismatch_reason(item, c: PriceCandidate) -> str:
     return " · ".join(reasons)
 
 
+def _bulk_benefit(item, c: PriceCandidate) -> bool:
+    """A LARGER-pack listing that costs LESS in absolute terms than the ordered
+    package is a strict win: more product for a lower total price (net32's Fuji
+    50-pk EXPORT at $203.85 vs the ordered 48-pk at $372.66). Client rule
+    2026-07-15: include these as price-match options despite the pack "mismatch".
+    Same product only (MPN or name+size), in-stock, non-gated, reliable price."""
+    if not (item.pack_qty and c.pack_qty and c.price and item.unit_price):
+        return False
+    if int(c.pack_qty) <= int(item.pack_qty):        # must be MORE than ordered
+        return False
+    if c.price >= item.unit_price:                    # and cheaper in absolute total
+        return False
+    if (_is_gated(c) or getattr(c, "out_of_stock", False)
+            or getattr(c, "price_unreliable", False)
+            or getattr(c, "variant_conflict", False)):
+        return False
+    crit = c.criteria or {}
+    return bool(getattr(c, "mpn_confirmed", False)
+                or (crit.get("name_match") and crit.get("size_form_match")))
+
+
 def _pricematch_eligible(item, c: PriceCandidate) -> bool:
     """STRICT price_match gate (client rule): pack quantity AND size/form AND
     variant must all match. Brand MAY differ (generic equivalent allowed, but
-    labeled). Anything failing this goes to the alternate sheet instead."""
+    labeled). Anything failing this goes to the alternate sheet instead.
+    EXCEPTION: a larger pack at a lower total price (_bulk_benefit) is allowed."""
     crit = c.criteria or {}
     if c.price is None or c.scraped_product_name is None:
         return False
@@ -318,7 +348,13 @@ def _pricematch_eligible(item, c: PriceCandidate) -> bool:
         return False
     if not (0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price):
         return False
-    if _is_gated(c) or _pack_mismatch(item, c):
+    if _is_gated(c):
+        return False
+    # BULK VALUE: a larger pack at a lower total price is a strict win — allow it
+    # despite the pack "mismatch" (it still passes every other gate above).
+    if _bulk_benefit(item, c):
+        return True
+    if _pack_mismatch(item, c):
         return False
     if "page not found" in (c.rejected_reason or "").lower():
         return False
@@ -400,6 +436,12 @@ def _poolable(item, c: PriceCandidate) -> bool:
             and not getattr(c, "out_of_stock", False)      # OOS → alternate sheet, never a price-match option
             and not getattr(c, "variant_conflict", False)  # wrong color/shade/size/flavor → alternate, never price-match
             and not getattr(c, "pack_conflict", False)     # different pack size → not a like-for-like price → alternate
+            # a REJECTED candidate is one the pipeline decided is NOT the ordered
+            # product (net32's Defend 830L-012 bur for a Meisinger 841G-012 order,
+            # "Product name and MPN do not match") — it must never be a price-match
+            # option. Login/OOS rejections are rescued to 'unverified' earlier, so
+            # what remains as 'rejected' is a genuine product mismatch.
+            and c.match_type != "rejected"
             and "page not found" not in (c.rejected_reason or "").lower())
 
 
@@ -434,6 +476,210 @@ def _select_options(r: ItemResult, options_per_item: int = 3) -> list:
     return opts
 
 
+# ------------------------------------------- marketplace rows (🅐/🅦/🅔) -----
+# Three dedicated rows per item — Amazon, Walmart, eBay — appended after the
+# regular options. A marketplace PRICE is shown only under the strict client
+# rule: same product AND same pack/size verified on the listing page (brand must
+# match too, or the MPN must appear on the listing). Anything less renders as a
+# "not on <marketplace>" row with the reason.
+
+MARKETPLACES = [("amazon", "🅐 Amazon", "AMAZON"),
+                ("walmart", "🅦 Walmart", "WALMART"),
+                ("ebay", "🅔 eBay", "EBAY")]
+
+# Per-marketplace brand tint: (row fill, label font color). The Amazon peach/orange
+# matches the client's hand-styled reference; Walmart gets its blue, eBay its green,
+# so the three rows are instantly distinguishable at a glance.
+MKT_STYLE = {
+    "amazon":  (PatternFill("solid", fgColor="FFE8CC"), Font(bold=True, color="C45500")),
+    "walmart": (PatternFill("solid", fgColor="DCEBFB"), Font(bold=True, color="0071CE")),
+    "ebay":    (PatternFill("solid", fgColor="E4F3DC"), Font(bold=True, color="4C8B1F")),
+}
+
+
+def _marketplace_eligible(item, c: PriceCandidate) -> bool:
+    return (_pricematch_eligible(item, c)
+            and (_brand_ok(item, c) or getattr(c, "mpn_confirmed", False)))
+
+
+def _is_house_brand_item(item) -> bool:
+    """A Henry Schein house-brand order (Premium/Criterion/Acclean/Maxima…) has
+    NO exact-brand competitor anywhere — every marketplace listing is a generic
+    by definition, so the strict brand gate would render 'not found' forever."""
+    return "henry schein" in (getattr(item, "brand", "") or "").lower()
+
+
+_TYPE_STOP = {"the", "and", "for", "with", "non", "sterile", "premium", "brand",
+              "dental", "dentistry", "absorbable", "disposable", "henry", "schein"}
+
+
+def _generic_marketplace_eligible(item, c: PriceCandidate) -> bool:
+    """Relaxed gate for the HOUSE-BRAND generic marketplace row ONLY: a generic
+    has a DIFFERENT product name by definition, so name/brand match is not
+    required. Instead demand (a) the ordered pack confirmed on the listing,
+    (b) strong product-TYPE token overlap (cotton+rolls+#2+2000), (c) a sane
+    in-stock, non-gated, reliable price. Keeps a random cheap product from posing
+    as the generic while letting the true same-pack alternative through."""
+    # a generic listing the LLM rejected for brand often has scraped_product_name
+    # nulled — fall back to the listing title / structured name for identity
+    name_src = (c.scraped_product_name or c.title or getattr(c, "structured_name", None) or "")
+    if c.price is None or not name_src:
+        return False
+    if _is_gated(c) or getattr(c, "out_of_stock", False) or getattr(c, "price_unreliable", False):
+        return False
+    if not (0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price):
+        return False
+    cpack = c.pack_qty
+    if cpack is None and item.pack_qty:      # derive from title/name/url ("2000/Bx", "2000-Bx")
+        hay = f"{name_src} {c.url or ''}"
+        m = re.search(r"\b(\d{2,5})\s*[-/]?\s*(?:bx|box|pk|pack|ct|count|ca|case)\b", hay, re.I)
+        if m:
+            cpack = int(m.group(1))
+    if not (item.pack_qty and cpack and int(cpack) == int(item.pack_qty)):
+        return False
+    # NOTE: don't trust criteria['size_form_match'] here — when the LLM rejects a
+    # generic on brand it nulls ALL criteria to False, which would wrongly block a
+    # correct-size generic. Size is instead discriminated by the exact pack match
+    # above and the ordered spec tokens ("#2") in the overlap check below.
+    page = f"{name_src} {c.title or ''}".lower()
+    # a size/grade marker in the order ("#2", "#4") is REQUIRED verbatim — it is
+    # the one token that separates a #2 cotton roll from a #4, and token-overlap
+    # alone dilutes it. A conflicting/absent grade disqualifies the generic.
+    grades = re.findall(r"#\s*\d+", (item.description or "").lower())
+    if grades and not all(re.sub(r"\s", "", g) in re.sub(r"\s", "", page) for g in grades):
+        return False
+    ref = re.findall(r"[a-z0-9#]+", (item.description or "").lower())
+    toks = [w for w in ref if len(w) > 1 and w not in _TYPE_STOP]
+    # the ALPHA product-noun tokens (cotton, rolls) carry the identity — a gauze
+    # sponge shares the generic numeric tokens (#2, 2000) but none of these, so
+    # require a strong match on the words specifically, not just overall overlap.
+    words = [w for w in toks if w.isalpha()]
+    if words and sum(1 for w in words if w in page) / len(words) < 0.6:
+        return False
+    if not toks:
+        return False
+    return sum(1 for w in toks if w in page) / len(toks) >= 0.55
+
+
+def _pick_marketplace(item, mcands: List[PriceCandidate], key: str):
+    """(best_candidate, reason) for one marketplace: the cheapest listing passing
+    the strict same-product+pack gate, else (None, why-not). Client rule
+    2026-07-15: for HOUSE-BRAND items only, a same-pack generic may show,
+    explicitly labelled — reason sentinel "generic"."""
+    pool = [c for c in mcands if getattr(c, "marketplace", None) == key]
+    eligible = [c for c in pool if _marketplace_eligible(item, c)]
+    if eligible:
+        # a SEEDED (operator-vouched) eligible listing wins over an ambiguous
+        # search hit at the same/higher price — the seeded eBay A3 (Ref 000140)
+        # must beat a shadeless "Fuji II Gold Label" $180 that merely ties on price.
+        seeded = [c for c in eligible if getattr(c, "_seed", False)]
+        if seeded:
+            return min(seeded, key=lambda c: c.price), ""
+        return min(eligible, key=lambda c: c.price), ""
+    if _is_house_brand_item(item):
+        generics = [c for c in pool if _pricematch_eligible(item, c)
+                    or _generic_marketplace_eligible(item, c)]
+        if generics:
+            return min(generics, key=lambda c: c.price), "generic"
+    if not pool:
+        return None, "no listing surfaced in a site-restricted search"
+    # explain the closest miss so the buyer knows what WAS there
+    scraped = [c for c in pool if c.scraped_product_name or c.rejected_reason]
+    if not scraped:
+        return None, "listings found but none could be page-verified this run"
+    best = max(scraped, key=lambda c: match_score(c.criteria, c.confidence))
+    why = (_mismatch_reason(item, best) or _clean(best.rejected_reason)
+           or "closest listing failed the same-product + same-pack check")
+    return None, f"closest listing did not qualify: {why}"
+
+
+def _write_marketplace_rows(ws, r: ItemResult) -> None:
+    """The three 🅐/🅦/🅔 rows for one item group (always all three)."""
+    item = r.item
+    for key, label, score_label in MARKETPLACES:
+        name = label.split(" ", 1)[1]
+        best, why = _pick_marketplace(item, r.marketplace_candidates or [], key)
+        if best is not None:
+            per_unit = round(item.unit_price - best.price, 2)
+            total = round(per_unit * item.qty, 2)
+            generic = why == "generic"
+            if best.price < item.unit_price:
+                row_label, sp, st = f"   {label}", per_unit, total
+                note = (f"{name} price — ${per_unit:,.2f}/unit below Schein · same "
+                        f"product & pack verified on the listing page")
+            else:
+                row_label, sp, st = f"   {label} (reference)", "", ""
+                note = (f"{name} reference price — ${abs(per_unit):,.2f}/unit ABOVE "
+                        f"Schein (shown for reference) · same product & pack verified")
+            if generic:
+                row_label += " (generic)"
+                note = (f"GENERIC EQUIVALENT — verify before substituting · house-brand "
+                        f"order, no exact-brand listing can exist on {name}; this is the "
+                        f"best same-pack generic ({(best.scraped_product_name or best.title or '')[:60]}) · "
+                        + note)
+            extra = _clean(best.notes)
+            if extra:
+                note += f" · {extra}"
+            ws.append(["", "", row_label, item.qty, item.unit_price, best.price,
+                       score_label, best.source_site, best.url,
+                       _dash(_clean(best.pack_condition)), note, sp, st])
+            ridx = ws.max_row
+            _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
+                       link_col=9, url=best.url)
+            _money(ws, ridx, [5, 6, 12, 13])
+        else:
+            ws.append(["", "", f"   {label}", item.qty, item.unit_price,
+                       f"not on {name}", score_label, "—", "", "—",
+                       f"No matching {name} product found — {why}", "", ""])
+            ridx = ws.max_row
+            _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP)
+            _money(ws, ridx, [5])
+        # brand tint — fill the whole row and colour the marketplace label
+        fill, brand_font = MKT_STYLE[key]
+        for col in range(1, len(PM_HEADERS) + 1):
+            ws.cell(row=ridx, column=col).fill = fill
+        ws.cell(row=ridx, column=3).font = brand_font
+        # keep the clickable link visibly a link (brand colour on the label only)
+        if best is not None and best.url:
+            ws.cell(row=ridx, column=9).font = LINK_FONT
+        ws.row_dimensions[ridx].height = 44
+
+
+def _reference_option(item, candidates):
+    """Cheapest page-verified EXACT match (all four criteria at the ordered pack)
+    that is priced AT OR ABOVE Schein — i.e. a genuine same-product listing the
+    savings-only rule excludes from the options. Shown as a labelled "(reference)"
+    main row instead of a bare NO SUPPLIER MATCH, so an item WITH exact matches
+    (just none cheaper) is never reported as if nothing was found. In-stock,
+    non-gated, price-reliable only. Returns the candidate or None."""
+    pool = [c for c in candidates
+            if _pricematch_eligible(item, c)
+            and c.price is not None and c.price >= item.unit_price
+            and not getattr(c, "out_of_stock", False)
+            and not getattr(c, "price_unreliable", False)
+            and not _is_gated(c)]
+    return min(pool, key=lambda c: c.price) if pool else None
+
+
+def _oos_reference(item, candidates, shown_lo):
+    """Cheapest OUT-OF-STOCK candidate that confirms all four criteria at the
+    ordered pack AND undercuts the best in-stock option shown (client QA:
+    carolinadental's $245.15 Fuji A3 vs the $318.96 headline). Not a buyable
+    price, so it renders as a clearly-labelled reference sub-row — availability
+    is the ONLY gate waived; pack/criteria/price-trust gates all still apply.
+    Returns the candidate or None."""
+    pool = [c for c in candidates
+            if getattr(c, "out_of_stock", False) and c.price is not None
+            and _is_exact_cand(item, c) and not _pack_mismatch(item, c)
+            and not getattr(c, "price_unreliable", False)
+            and not getattr(c, "variant_conflict", False)
+            and 0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price]
+    if not pool:
+        return None
+    c = min(pool, key=lambda x: x.price)
+    return c if (shown_lo is None or c.price < shown_lo) else None
+
+
 def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                              out: Path, options_per_item: int = 3) -> Path:
     """Primary negotiation report — up to 3 options per item.
@@ -450,24 +696,60 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
              f"  ·  Generated: {_now()}")
     legend = ("🟢 >10% savings   🟡 5–10% savings   Main row = best option (EXACT when "
               "available) · ↳ Option 2-3 = next-closest matches with reasoning · "
-              "GATED = login/membership pricing, verify manually")
+              "🅐/🅦/🅔 = Amazon/Walmart/eBay check (price shown only when the same "
+              "product AND pack is verified) · GATED = login pricing, verify manually")
     _title_block(ws, title, legend, len(PM_HEADERS), PM_HEADERS, PM_WIDTHS)
 
     groups = []
     for r in results:
         # Options shown for this item (cheapest eligible exact, then next best by
         # pack/variant priority). Same selection the alternate writer uses to
-        # exclude these rows so they aren't repeated there.
+        # exclude these rows so they aren't repeated there. EVERY item gets a
+        # group (client rule): items with no supplier match render a placeholder
+        # main row so their Amazon/Walmart/eBay rows still show; they sort last.
         opts = _select_options(r, options_per_item)
-        if not opts:
-            continue
-        best_total = max(round((r.item.unit_price - c.price) * r.item.qty, 2)
-                         for c in opts)
+        if opts:
+            best_total = max(round((r.item.unit_price - c.price) * r.item.qty, 2)
+                             for c in opts)
+        else:
+            best_total = float("-inf")
         groups.append((best_total, r, opts))
 
     groups.sort(key=lambda g: g[0], reverse=True)
     band = 0
     for _, r, opts in groups:
+        if not opts:
+            ref = _reference_option(r.item, r.candidates)
+            if ref is not None:
+                # exact match(es) exist but none beat Schein — show the cheapest
+                # as a clearly-labelled reference row instead of NO SUPPLIER MATCH
+                over = round(ref.price - r.item.unit_price, 2)
+                ws.append([r.item.schein_sku, _dash(r.item.mpn), r.item.description,
+                           r.item.qty, r.item.unit_price, ref.price,
+                           f"REFERENCE — {_score_label(r.item, ref)}",
+                           ref.source_site, ref.url, _dash(_clean(ref.pack_condition)),
+                           f"NO CHEAPER SUPPLIER — closest exact match is ${ref.price:,.2f} "
+                           f"(${over:,.2f}/unit ABOVE Schein ${r.item.unit_price:,.2f}); shown "
+                           f"for reference. Schein is already competitive here.",
+                           "", ""])
+                ridx = ws.max_row
+                _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
+                           link_col=9, url=ref.url)
+                _money(ws, ridx, [5, 6])
+                ws.row_dimensions[ridx].height = 48
+            else:
+                # placeholder main row — item had no verifiable public supplier match
+                ws.append([r.item.schein_sku, _dash(r.item.mpn), r.item.description,
+                           r.item.qty, r.item.unit_price, "—", "NO SUPPLIER MATCH",
+                           "—", search_fallback_url(r.item), "—",
+                           "No public supplier listing passed verification this run — "
+                           "see the Alternate Purchases sheet for near-matches.",
+                           "", ""])
+                ridx = ws.max_row
+                _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
+                           link_col=9, url=search_fallback_url(r.item))
+                _money(ws, ridx, [5])
+            ws.row_dimensions[ridx].height = 44
         for n, c in enumerate(opts, start=1):
             per_unit = round(r.item.unit_price - c.price, 2)
             total = round(per_unit * r.item.qty, 2)
@@ -484,7 +766,14 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 flags.append("⚠ OUT OF STOCK — this listing is no longer available; "
                              "not a buyable price, shown for reference only")
             flag_prefix = (" · ".join(flags) + " · ") if flags else ""
-            if getattr(c, "is_generic_equivalent", False):
+            if _bulk_benefit(r.item, c):
+                iu = r.item.unit_price / r.item.pack_qty
+                cu = c.price / c.pack_qty
+                reason = (f"BULK VALUE — {c.pack_qty}/pk (MORE than the ordered "
+                          f"{r.item.pack_qty}/pk) at a LOWER total price: ${cu:,.2f}/unit "
+                          f"vs Schein ${iu:,.2f}/unit. More product for less money — "
+                          f"verify it's the same item before ordering.")
+            elif getattr(c, "is_generic_equivalent", False):
                 reason = ("GENERIC EQUIVALENT — same product type, different/no brand; "
                           "no competitor sells the exact Schein house-brand item. "
                           "Verify clinical equivalence before substituting.")
@@ -547,7 +836,7 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
             for o in (getattr(c, "backorder_options", None) or []):
                 if o.get("price"):
                     bo.append((o, c))
-        if bo:
+        if bo and opts:
             shown_lo = min(c.price for c in opts)
             o, c = min(bo, key=lambda t: t[0]["price"])
             if o["price"] < shown_lo:
@@ -568,11 +857,18 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 ws.cell(row=ridx, column=3).font = OPTION_FONT
                 _money(ws, ridx, [6, 12, 13])
                 ws.row_dimensions[ridx].height = 56
+
+        # (Out-of-stock listings are excluded from price_match entirely per client
+        # rule 2026-07-15 — no OOS reference row. OOS candidates already never pool
+        # or headline; they remain in the Alternate Purchases / Evidence sheets.)
+
+        # the three 🅐/🅦/🅔 marketplace rows — always rendered, found or not
+        _write_marketplace_rows(ws, r)
         band += 1
     wb.save(out)
     n_rows = sum(len(o) for _, _, o in groups)
-    log.info("Price match report: %d item(s), %d option row(s) → %s",
-             len(groups), n_rows, out.name)
+    log.info("Price match report: %d item(s), %d option row(s) + %d marketplace "
+             "row(s) → %s", len(groups), n_rows, 3 * len(groups), out.name)
     return out
 
 
@@ -622,6 +918,12 @@ def write_alternate_purchase_list(order: ParsedOrder,
     # here so the alternate sheet never repeats a row that's in price_match.
     shown_in_pm = {(r.item.schein_sku, c.url)
                    for r in (results or []) for c in _select_options(r)}
+    for r in (results or []):
+        opts = _select_options(r)
+        if not opts:
+            rc = _reference_option(r.item, r.candidates)
+            if rc is not None:
+                shown_in_pm.add((r.item.schein_sku, rc.url))
 
     # A — equivalency-table findings (confirmed substitutions)
     equivalency_skus = set()
@@ -734,13 +1036,14 @@ def write_evidence_file(order: ParsedOrder, results: List[ItemResult],
                  len(headers), headers, widths)
     band = 0
     for r in results:
-        if not r.candidates:
+        all_cands = list(r.candidates) + list(getattr(r, "marketplace_candidates", None) or [])
+        if not all_cands:
             ws.append([r.item.schein_sku, r.item.description,
                        "— no public candidates found —", "—", "—",
                        None, None, "—", "none", 0, 0, "", "", "", "", "—"])
             _style_row(ws, ws.max_row, len(headers), None, band % 2 == 0, {2, 3, 16})
             band += 1
-        for c in r.candidates:
+        for c in all_cands:
             ws.append([
                 r.item.schein_sku, r.item.description, c.title, c.source_site,
                 c.url, c.price, c.pack_qty, _dash(_clean(c.pack_condition)),
