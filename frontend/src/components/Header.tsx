@@ -1,61 +1,42 @@
+import type { AppTab } from "./SideMenu";
+
 interface HeaderProps {
-  activeTab: "analyze" | "history";
-  onTabChange: (tab: "analyze" | "history") => void;
+  activeTab: AppTab;
   apiConnected: boolean;
 }
 
-export function Header({ activeTab, onTabChange, apiConnected }: HeaderProps) {
+const PAGE_META: Record<AppTab, { title: string; crumb: string }> = {
+  analyze: { title: "Analyze Orders", crumb: "Analyze" },
+  history: { title: "Order History", crumb: "History" },
+};
+
+export function Header({ activeTab, apiConnected }: HeaderProps) {
+  const page = PAGE_META[activeTab];
+
   return (
-    <header className="topbar">
-      <div className="topbar__brand">
-        <div className="topbar__logo" aria-hidden>
-          <svg viewBox="0 0 40 40" fill="none">
-            <rect width="40" height="40" rx="12" fill="url(#logoGrad)" />
-            <path
-              d="M12 26c0-5 3.5-9 8-9s8 4 8 9"
-              stroke="#fff"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-            />
-            <circle cx="20" cy="15" r="3" stroke="#fff" strokeWidth="2.2" />
-            <defs>
-              <linearGradient id="logoGrad" x1="0" y1="0" x2="40" y2="40">
-                <stop stopColor="#6366f1" />
-                <stop offset="1" stopColor="#06b6d4" />
-              </linearGradient>
-            </defs>
-          </svg>
-        </div>
-        <div>
-          <h1>Dental Price Matcher</h1>
-          <p>Smart supply pricing · live pipeline</p>
-        </div>
+    <header className="admin-topbar">
+      <div className="admin-topbar__left">
+        <nav className="admin-breadcrumb" aria-label="Breadcrumb">
+          <span>Admin</span>
+          <span className="admin-breadcrumb__sep">/</span>
+          <span className="admin-breadcrumb__current">{page.crumb}</span>
+        </nav>
+        <h1 className="admin-topbar__title">{page.title}</h1>
       </div>
 
-      <div className="topbar__actions">
+      <div className="admin-topbar__right">
         <span
           className={`status-pill ${apiConnected ? "status-pill--live" : "status-pill--down"}`}
         >
           <span className="status-pill__dot" />
-          {apiConnected ? "Live" : "Offline"}
+          API {apiConnected ? "Online" : "Offline"}
         </span>
-
-        <nav className="seg-nav" aria-label="Main">
-          <button
-            type="button"
-            className={`seg-nav__btn ${activeTab === "analyze" ? "seg-nav__btn--on" : ""}`}
-            onClick={() => onTabChange("analyze")}
-          >
-            Analyze
-          </button>
-          <button
-            type="button"
-            className={`seg-nav__btn ${activeTab === "history" ? "seg-nav__btn--on" : ""}`}
-            onClick={() => onTabChange("history")}
-          >
-            History
-          </button>
-        </nav>
+        <div className="admin-topbar__chip">
+          <span className="admin-topbar__chip-avatar" aria-hidden>
+            A
+          </span>
+          <span>admin</span>
+        </div>
       </div>
     </header>
   );
