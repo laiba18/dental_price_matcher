@@ -111,7 +111,7 @@ def reset_firecrawl_budget():
     _gp_state["failures"] = 0
     _serp_state["exhausted"] = False
     _serp_state["consecutive_failures"] = 0
-    _shop_state["disabled"] = False
+    _shop_state["disabled"] = SHOP_DISABLE_AFTER == 0
     _shop_state["zero_streak"] = 0
     log.info("Firecrawl budget reset (max %d scrapes, %d run credits)",
              FIRECRAWL_MAX_SCRAPES, FIRECRAWL_RUN_CREDITS)
@@ -1157,9 +1157,9 @@ _gp_state = {"disabled": False, "failures": 0}
 # google_shopping auto-skip: if it yields 0 usable candidates for this many
 # items in a row, stop calling it for the rest of the run (logs show it
 # consistently returning 0 usable on this SerpAPI plan). Saves 1 call/query/item.
-_shop_state = {"disabled": False, "zero_streak": 0}
-_shop_lock = threading.Lock()   # guards _shop_state under the parallel item workers
 SHOP_DISABLE_AFTER = int(os.environ.get("GOOGLE_SHOPPING_DISABLE_AFTER", "3"))
+_shop_state = {"disabled": SHOP_DISABLE_AFTER == 0, "zero_streak": 0}
+_shop_lock = threading.Lock()   # guards _shop_state under the parallel item workers
 
 
 def _resolve_google_product(product_id: str, cands: list, seen: set,
