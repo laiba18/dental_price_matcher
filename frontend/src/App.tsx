@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { checkHealth, runOrderStreaming } from "./api";
-import { isAuthenticated, logout } from "./auth";
+import { getLoginUser, isAuthenticated, logout } from "./auth";
 import { Footer } from "./components/Footer";
 import { Header } from "./components/Header";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -8,6 +8,7 @@ import { LoginPage } from "./components/LoginPage";
 import { ProcessingPanel } from "./components/ProcessingPanel";
 import { QuotaAlerts } from "./components/QuotaAlerts";
 import { ResultsPanel } from "./components/ResultsPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { SideMenu, type AppTab } from "./components/SideMenu";
 import { UploadZone } from "./components/UploadZone";
 import { useElapsedTimer } from "./hooks/useElapsedTimer";
@@ -25,6 +26,7 @@ export default function App() {
   const [result, setResult] = useState<OrderRunResult | null>(null);
   const [apiConnected, setApiConnected] = useState(true);
   const [panelVisible, setPanelVisible] = useState(false);
+  const [adminName, setAdminName] = useState(getLoginUser);
 
   const { history, refresh } = useOrderHistory();
   const { elapsedMs, stop: stopTimer } = useElapsedTimer(processing);
@@ -47,6 +49,17 @@ export default function App() {
     const id = window.setInterval(ping, 20_000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!panelVisible) return;
+    const t = window.setTimeout(() => {
+      document.getElementById("process-panel")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [panelVisible]);
 
   const handleAnalyze = async () => {
     if (!file || processing) return;
@@ -108,7 +121,7 @@ export default function App() {
       <SideMenu activeTab={tab} onTabChange={setTab} onLogout={handleLogout} />
 
       <div className="portal-body">
-        <Header activeTab={tab} apiConnected={apiConnected} />
+        <Header activeTab={tab} apiConnected={apiConnected} adminName={adminName} />
 
         <main className="portal-main">
           {tab === "analyze" ? (
@@ -199,8 +212,10 @@ export default function App() {
               {error && <div className="alert alert--error">{error}</div>}
               {result && !processing && <ResultsPanel result={result} />}
             </div>
-          ) : (
+          ) : tab === "history" ? (
             <HistoryPanel history={history} />
+          ) : (
+            <SettingsPanel onCredentialsChanged={() => setAdminName(getLoginUser())} />
           )}
         </main>
 
