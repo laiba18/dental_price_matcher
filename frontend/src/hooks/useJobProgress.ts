@@ -314,7 +314,7 @@ export function useJobProgress() {
 
     const activity = eventToActivity(evt);
     if (activity) {
-      setActivities((prev) => [activity, ...prev].slice(0, 200));
+      setActivities((prev) => [...prev, activity].slice(-200));
     }
   }, []);
 

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { formatDuration, formatTime } from "../api";
 import { PIPELINE_STEPS, type ActivityEntry, type QuotaAlert, type ServiceState, type StepStatus } from "../types";
 import { QuotaAlerts } from "./QuotaAlerts";
@@ -65,8 +66,36 @@ export function ProcessingPanel({
   reference,
   quotaAlerts,
 }: ProcessingPanelProps) {
+  const panelRef = useRef<HTMLElement>(null);
+  const logListRef = useRef<HTMLUListElement>(null);
+  const stickToBottomRef = useRef(true);
+
+  // Throw the process screen into view when analysis starts / panel mounts
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const id = window.requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, []);
+
+  // Keep following latest logs unless the user scrolled up
+  useEffect(() => {
+    const list = logListRef.current;
+    if (!list || !stickToBottomRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [activities.length]);
+
+  const onLogScroll = () => {
+    const list = logListRef.current;
+    if (!list) return;
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 48;
+  };
+
   return (
-    <section className="processing-panel">
+    <section className="processing-panel" ref={panelRef} id="process-panel">
       {quotaAlerts.length > 0 && <QuotaAlerts alerts={quotaAlerts} />}
       <div className="processing-panel__header">
         <div>
@@ -126,7 +155,11 @@ export function ProcessingPanel({
             <h3>Activity log</h3>
             <span>{activities.length} events</span>
           </div>
-          <ul className="activity-feed__list">
+          <ul
+            className="activity-feed__list"
+            ref={logListRef}
+            onScroll={onLogScroll}
+          >
             {activities.length === 0 ? (
               <li className="activity-feed__empty">Waiting for backend events…</li>
             ) : (

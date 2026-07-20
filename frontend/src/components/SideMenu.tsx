@@ -1,4 +1,4 @@
-export type AppTab = "analyze" | "history";
+export type AppTab = "analyze" | "history" | "settings";
 
 interface SideMenuProps {
   activeTab: AppTab;
@@ -6,12 +6,13 @@ interface SideMenuProps {
   onLogout: () => void;
 }
 
-const MENU_ITEMS: { id: AppTab; label: string; icon: "analyze" | "history" }[] = [
+const MENU_ITEMS: { id: AppTab; label: string; icon: "analyze" | "history" | "settings" }[] = [
   { id: "analyze", label: "Analyze", icon: "analyze" },
   { id: "history", label: "History", icon: "history" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-function MenuIcon({ name }: { name: "analyze" | "history" }) {
+function MenuIcon({ name }: { name: "analyze" | "history" | "settings" }) {
   if (name === "analyze") {
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -21,6 +22,20 @@ function MenuIcon({ name }: { name: "analyze" | "history" }) {
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
+  if (name === "settings") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+        <path
+          d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
         />
       </svg>
     );

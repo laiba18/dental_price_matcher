@@ -3,14 +3,16 @@ import type { AppTab } from "./SideMenu";
 interface HeaderProps {
   activeTab: AppTab;
   apiConnected: boolean;
+  adminName?: string;
 }
 
 const PAGE_META: Record<AppTab, { title: string; crumb: string }> = {
   analyze: { title: "Analyze Orders", crumb: "Analyze" },
   history: { title: "Order History", crumb: "History" },
+  settings: { title: "Admin Settings", crumb: "Settings" },
 };
 
-export function Header({ activeTab, apiConnected }: HeaderProps) {
+export function Header({ activeTab, apiConnected, adminName = "admin" }: HeaderProps) {
   const page = PAGE_META[activeTab];
 
   return (
@@ -33,9 +35,9 @@ export function Header({ activeTab, apiConnected }: HeaderProps) {
         </span>
         <div className="admin-topbar__chip">
           <span className="admin-topbar__chip-avatar" aria-hidden>
-            A
+            {(adminName[0] || "A").toUpperCase()}
           </span>
-          <span>admin</span>
+          <span>{adminName}</span>
         </div>
       </div>
     </header>
