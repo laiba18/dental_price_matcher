@@ -313,7 +313,9 @@ def _bulk_benefit(item, c: PriceCandidate) -> bool:
     package is a strict win: more product for a lower total price (net32's Fuji
     50-pk EXPORT at $203.85 vs the ordered 48-pk at $372.66). Client rule
     2026-07-15: include these as price-match options despite the pack "mismatch".
-    Same product only (MPN or name+size), in-stock, non-gated, reliable price."""
+    Same product only (MPN or name+size), in-stock, non-gated, reliable price.
+    BRAND must also be confirmed or absent — a different-brand generic gutta
+    percha (Meta Biomed vs SybronEndo) is not the same product."""
     if not (item.pack_qty and c.pack_qty and c.price and item.unit_price):
         return False
     if int(c.pack_qty) <= int(item.pack_qty):        # must be MORE than ordered
@@ -324,9 +326,16 @@ def _bulk_benefit(item, c: PriceCandidate) -> bool:
             or getattr(c, "price_unreliable", False)
             or getattr(c, "variant_conflict", False)):
         return False
+    if c.match_type == "unverified":
+        return False
     crit = c.criteria or {}
-    return bool(getattr(c, "mpn_confirmed", False)
-                or (crit.get("name_match") and crit.get("size_form_match")))
+    if not (getattr(c, "mpn_confirmed", False)
+            or (crit.get("name_match") and crit.get("size_form_match"))):
+        return False
+    if (getattr(item, "brand", None) and not crit.get("brand_match")
+            and not getattr(c, "mpn_confirmed", False)):
+        return False
+    return True
 
 
 def _pricematch_eligible(item, c: PriceCandidate) -> bool:
@@ -442,6 +451,12 @@ def _poolable(item, c: PriceCandidate) -> bool:
             # option. Login/OOS rejections are rescued to 'unverified' earlier, so
             # what remains as 'rejected' is a genuine product mismatch.
             and c.match_type != "rejected"
+            # an UNVERIFIED candidate has NO confirmed match criteria — it's a
+            # login-rescued structured price whose product identity was never
+            # validated.  Showing it as a price-match option risks headlining a
+            # wrong product (Safco G2-Bond at $68.99 for an OptiBond order).
+            # Route to alternate sheet; verified matches headline instead.
+            and c.match_type != "unverified"
             and "page not found" not in (c.rejected_reason or "").lower())
 
 
