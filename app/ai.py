@@ -105,12 +105,20 @@ def _trip_llm_circuit_breaker(log_msg: str, *log_args) -> None:
     _groq_cb["tripped_until"] = time.monotonic() + GROQ_CB_COOLDOWN
     log.error(log_msg, *log_args)
     label = _LLM_LABELS.get(LLM_PROVIDER, LLM_PROVIDER.title())
-    emit_quota_limit(
-        LLM_PROVIDER,
-        f"Your {label} API credit or rate limit has been reached.",
-        kind="rate_limit",
-        detail="AI enrichment may be reduced until the limit resets.",
-    )
+    if LLM_PROVIDER == "gemini":
+        emit_quota_limit(
+            "gemini",
+            "Gemini tokens exhausted — please add more tokens to your Gemini account.",
+            kind="tokens",
+            detail="Open Google AI Studio / Cloud Console, top up Gemini API quota, then re-run the analysis.",
+        )
+    else:
+        emit_quota_limit(
+            LLM_PROVIDER,
+            f"Your {label} API credit or rate limit has been reached.",
+            kind="rate_limit",
+            detail="AI enrichment may be reduced until the limit resets.",
+        )
 
 # Model list follows the active provider's preset, overridable by LLM_MODELS
 # (universal). The legacy GROQ_MODELS/GROQ_MODEL vars apply ONLY when the provider

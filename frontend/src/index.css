@@ -1,5 +1,5 @@
-:root {
-  /* Admin portal — slate + sky */
+﻿:root {
+  /* Admin portal â€” slate + sky */
   --bg: #eef1f6;
   --sidebar: #0f172a;
   --sidebar-2: #1e293b;
@@ -83,7 +83,7 @@ code {
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
 
-/* ── Admin portal shell ── */
+/* â”€â”€ Admin portal shell â”€â”€ */
 .app { min-height: 100vh; position: relative; }
 
 .app--portal {
@@ -110,7 +110,7 @@ code {
 
 .workspace { display: flex; flex-direction: column; gap: 20px; }
 
-/* ── Dark sidebar ── */
+/* â”€â”€ Dark sidebar â”€â”€ */
 .admin-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -264,7 +264,7 @@ code {
   border-color: rgba(251, 113, 133, 0.35);
 }
 
-/* ── Top bar ── */
+/* â”€â”€ Top bar â”€â”€ */
 .admin-topbar {
   position: sticky;
   top: 0;
@@ -338,7 +338,7 @@ code {
   place-items: center;
 }
 
-/* ── Footer ── */
+/* â”€â”€ Footer â”€â”€ */
 .admin-footer {
   display: flex;
   align-items: center;
@@ -352,7 +352,7 @@ code {
   color: var(--muted);
 }
 
-/* ── Status ── */
+/* â”€â”€ Status â”€â”€ */
 .status-pill {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 0.78rem; font-weight: 700; padding: 6px 14px;
@@ -416,7 +416,7 @@ code {
   }
 }
 
-/* ── Hero card ── */
+/* â”€â”€ Hero card â”€â”€ */
 .hero-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -452,7 +452,7 @@ code {
 
 .hero-card__intro p { color: var(--muted); font-size: 0.95rem; max-width: 52ch; }
 
-/* ── Dropzone ── */
+/* â”€â”€ Dropzone â”€â”€ */
 .upload-zone { margin-bottom: 4px; }
 
 .dropzone {
@@ -512,7 +512,7 @@ code {
 
 .dropzone__hint { color: var(--muted); font-size: 0.86rem; }
 
-/* ── Buttons ── */
+/* â”€â”€ Buttons â”€â”€ */
 .toolbar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
 
 .btn {
@@ -561,7 +561,7 @@ code {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Alerts ── */
+/* â”€â”€ Alerts â”€â”€ */
 .alert {
   padding: 14px 18px; border-radius: var(--r-md);
   font-size: 0.9rem; font-weight: 500;
@@ -573,6 +573,12 @@ code {
 
 .alert--warn { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-text); }
 
+.alert--ok {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+  color: #047857;
+}
+
 .quota-alerts {
   margin-bottom: 20px;
   padding: 16px 18px;
@@ -581,6 +587,12 @@ code {
   background: var(--warn-bg);
   color: var(--warn-text);
   box-shadow: var(--shadow-sm);
+}
+
+.quota-alerts--gemini {
+  border-color: rgba(234, 88, 12, 0.35);
+  background: rgba(255, 247, 237, 0.95);
+  color: #c2410c;
 }
 
 .quota-alerts__header {
@@ -643,8 +655,94 @@ code {
   opacity: 0.85;
 }
 
-/* ── Processing panel ── */
+.quota-alerts__action {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #c2410c;
+  text-decoration: underline;
+}
+
+.quota-alerts__item--gemini {
+  border-color: rgba(234, 88, 12, 0.2);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+/* â”€â”€ Settings â”€â”€ */
+.settings {
+  max-width: 560px;
+}
+
+.settings-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.settings-card__head {
+  margin-bottom: 20px;
+}
+
+.settings-card__head h2 {
+  font-family: var(--display);
+  font-size: 1.2rem;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+
+.settings-card__head p {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.settings-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 24px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.settings-card__meta-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-form h3 {
+  font-family: var(--display);
+  font-size: 0.98rem;
+  font-weight: 800;
+  margin-bottom: 2px;
+}
+
+.settings-form--spaced {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-form .btn {
+  align-self: flex-start;
+}
+
+/* â”€â”€ Processing panel â”€â”€ */
 .processing-panel {
+  scroll-margin-top: 88px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r);
@@ -861,7 +959,7 @@ code {
 
 .activity-row__detail { display: block; color: var(--muted); font-size: 0.74rem; margin-top: 2px; word-break: break-all; }
 
-/* ── Results ── */
+/* â”€â”€ Results â”€â”€ */
 .results {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -952,7 +1050,7 @@ code {
   white-space: nowrap;
 }
 
-/* ── History ── */
+/* â”€â”€ History â”€â”€ */
 .history { animation: rise 0.35s ease; }
 
 .history--empty {
@@ -1217,7 +1315,7 @@ code {
   .hist-reports { grid-template-columns: 1fr; }
 }
 
-/* ── Admin login ── */
+/* â”€â”€ Admin login â”€â”€ */
 .admin-login {
   min-height: 100vh;
   display: grid;

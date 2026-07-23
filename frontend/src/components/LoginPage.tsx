@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { DEMO_PASS, DEMO_USER, login } from "../auth";
+﻿import { useState, type FormEvent } from "react";
+import { DEFAULT_PASS, DEFAULT_USER, hasCustomCredentials, login } from "../auth";
 
 interface LoginPageProps {
   onSuccess: () => void;
@@ -11,6 +11,7 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
+  const showDemoHint = !hasCustomCredentials();
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -112,9 +113,13 @@ export function LoginPage({ onSuccess }: LoginPageProps) {
             </button>
           </form>
 
-          <p className="login-hint">
-            Demo: <code>{DEMO_USER}</code> / <code>{DEMO_PASS}</code>
-          </p>
+          {showDemoHint ? (
+            <p className="login-hint">
+              Demo: <code>{DEFAULT_USER}</code> / <code>{DEFAULT_PASS}</code>
+            </p>
+          ) : (
+            <p className="login-hint">Use the credentials set in Admin → Settings.</p>
+          )}
         </div>
       </div>
     </div>

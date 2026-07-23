@@ -14,6 +14,7 @@ export function getApiBase(): string {
   return "/api";
 }
 
+
 export function setApiBase(url: string): void {
   localStorage.setItem(STORAGE_KEY, normalizeBase(url));
 }
