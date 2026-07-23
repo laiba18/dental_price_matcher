@@ -173,6 +173,32 @@ _WRONG_FORM = ("applier", "dispensing gun", "capsule gun", "applicator gun")
 # page is a generic substitute, not the same product.
 _HOUSE_BRANDS = ("criterion", "acclean", "maxima")
 
+# Model-suffix guard: product-line modifiers that distinguish different SKUs
+# within the same family ("Microbrush X" vs "Microbrush Plus", "OptiBond FL"
+# vs "OptiBond Solo Plus").  Fire only when BOTH sides carry a suffix.
+_MODEL_SUFFIXES = (
+    "plus", "ultra", "pro", "max", "mini", "lite", "nano",
+    "premier", "select", "classic", "solo", "dual",
+    "extra", "xtra", "xt", "xl", "xs",
+)
+_MODEL_SUFFIX_RE = re.compile(
+    r"\b(" + "|".join(re.escape(s) for s in _MODEL_SUFFIXES) + r")\b", re.I)
+
+def _model_suffix_in(text: str) -> set:
+    return {m.group(1).lower() for m in _MODEL_SUFFIX_RE.finditer(text or "")}
+
+# Single-letter model identifiers (e.g. "Microbrush X" — the "X" is the model).
+# Must be surrounded by whitespace or string boundary — letters within words
+# like "eXTRa" or "G2-BOND" must NOT match.
+_SINGLE_LETTER_MODEL_RE = re.compile(
+    r"(?:^|\s)([A-Z])(?:\s|$)")
+
+
+def _single_letter_model(text: str) -> set:
+    """Single uppercase letter that acts as a model identifier (Microbrush X)."""
+    return {m.group(1).upper() for m in _SINGLE_LETTER_MODEL_RE.finditer(text or "")
+            if m.group(1) not in ("A", "I")}   # skip articles
+
 
 # Out-of-stock / unavailable phrasing on a product page's buy box. A listing that
 # can't be bought is not a real price and must never headline as the recommended
@@ -332,6 +358,28 @@ def variant_mismatch(item: OrderLineItem, c: PriceCandidate) -> Optional[str]:
     if oss and css and oss.isdisjoint(css):
         return (f"set-speed mismatch (ordered {'/'.join(sorted(oss))} set, "
                 f"page {'/'.join(sorted(css))} set)")
+    # ---- model SUFFIX: "Microbrush X" vs "Microbrush Plus", "OptiBond FL"
+    # vs "OptiBond Solo Plus". Both sides must name a suffix; missing suffix on
+    # one side stays silent (the page may just omit it in the title).
+    osuf = _model_suffix_in(ordered_txt)
+    csuf = _model_suffix_in(cand_all)
+    if osuf and csuf and osuf.isdisjoint(csuf):
+        return (f"model-suffix mismatch (ordered {'/'.join(sorted(osuf))}, "
+                f"page {'/'.join(sorted(csuf))})")
+    # single-letter model identifiers ("Microbrush X" vs "Microbrush Plus")
+    olm = _single_letter_model(ordered_txt)
+    clm = _single_letter_model(cand_all)
+    if olm and clm and olm.isdisjoint(clm):
+        return (f"model-letter mismatch (ordered {'/'.join(sorted(olm))}, "
+                f"page {'/'.join(sorted(clm))})")
+    # cross-check: order has a single-letter model but page has a multi-char
+    # suffix instead (or vice versa) — "Microbrush X" vs "Microbrush Plus"
+    if olm and csuf and not osuf:
+        return (f"model mismatch (ordered {'/'.join(sorted(olm))}, "
+                f"page {'/'.join(sorted(csuf))})")
+    if osuf and clm and not olm:
+        return (f"model mismatch (ordered {'/'.join(sorted(osuf))}, "
+                f"page {'/'.join(sorted(clm))})")
     return None
 
 
@@ -998,6 +1046,31 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                                      "url": "", "scraped_variant": None})
         if variant_mismatch(item, probe):
             continue
+        # BRAND / PRODUCT-NAME gate: when the order has a known brand AND a
+        # distinctive product name (e.g. brand="Kerr", product_name="OptiBond
+        # eXTRa Universal"), require at least ONE distinctive anchor token from
+        # the product_name to appear in the heading. This blocks "G2-BOND
+        # Universal" (a GC product) from heading-confirming as "OptiBond eXTRa
+        # Universal" (a Kerr product) — the two share "Universal" but neither
+        # "OptiBond" nor "eXTRa" appears.  Skip when brand is absent (generic
+        # items) or when the product_name is too short to have a distinctive
+        # anchor (≤1 usable token after stripping brand and pack words).
+        if item.brand and getattr(item, "product_name", None):
+            _pn = (item.product_name or "").lower()
+            _bt = set(re.findall(r"[a-z0-9.]+", (item.brand or "").lower()))
+            _pack_words = {"bx", "pk", "bg", "ea", "bt", "box", "pack", "bag",
+                           "each", "bottle", "refill", "kit", "syringe"}
+            _generic_words = {"universal", "dental", "adhesive", "bond",
+                              "bonding", "cement", "material", "composite",
+                              "impression", "tray", "mixing", "tips", "medium",
+                              "fine", "light", "heavy", "body", "clear",
+                              "white", "opaque", "anterior", "posterior"}
+            _anchors = [w for w in re.findall(r"[a-z0-9.]+", _pn)
+                        if len(w) > 1 and w not in _bt and w not in _pack_words
+                        and w not in _generic_words
+                        and w not in ("the", "and", "for", "with")]
+            if len(_anchors) >= 1 and not any(_tok_in(a) for a in _anchors):
+                continue
         if not c.scraped_product_name:
             c.scraped_product_name = head
         crit.update({"name_match": True, "size_form_match": True, "pack_match": True})
