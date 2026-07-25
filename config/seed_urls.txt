@@ -164,3 +164,14 @@
 9872474 | https://www.amazon.com/Patient-Room-Sharps-Collectors-305436/dp/B00188HMIG
 # 7120116 GUM — Adult Sensitive Compact (variant differs from ordered Soft), $39.93
 7120116 | https://www.amazon.com/Adult-Premium-Sensitive-Compact-Toothbrush/dp/B0DK7PMM66
+
+# 1077811 Gutta Percha CC Feath Spilprf Fine-Med 100/Bx — Render discovery
+# misses the product-specific Crazy Dental page (finds the category page instead)
+1077811 | https://www.crazydentalprices.com/Gutta-Percha-Points-13986
+1077811 | https://www.net32.com/ec/kerr-finemedium-gutta-percha-points-100-individual-d-26755
+1077811 | https://www.supplyclinic.com/items/gutta-percha-points-120-pk-100-dentsply-sirona-670941
+# 1078836 Neotray Anterior 30/Bx — Render organic returns mostly off-topic
+# impression tray results; these are the correct Premier Neotray pages
+1078836 | https://chasedentalsupply.com/premier-dental-neotray-anterior-30-bx-premier/
+1078836 | https://ddsdentalsupplies.com/premier-neotray-impression-tray-anterior-30-bx/
+1078836 | https://allstardentalsupply.com/products/neotray-anterior-30-bx-premier
