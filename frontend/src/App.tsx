@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { checkHealth, runOrderStreaming } from "./api";
+import { checkHealth, parseOrderPreview, runOrderStreaming } from "./api";
 import { getLoginUser, isAuthenticated, logout } from "./auth";
 import { Footer } from "./components/Footer";
 import { Header } from "./components/Header";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LoginPage } from "./components/LoginPage";
+import { ParsePreviewPanel } from "./components/ParsePreviewPanel";
 import { ProcessingPanel } from "./components/ProcessingPanel";
 import { QuotaAlerts } from "./components/QuotaAlerts";
 import { ResultsPanel } from "./components/ResultsPanel";
@@ -14,12 +15,14 @@ import { UploadZone } from "./components/UploadZone";
 import { useElapsedTimer } from "./hooks/useElapsedTimer";
 import { useJobProgress } from "./hooks/useJobProgress";
 import { useOrderHistory } from "./hooks/useOrderHistory";
-import type { OrderRunResult } from "./types";
+import type { OrderHistoryEntry, OrderRunResult, ParsePreview } from "./types";
 
 export default function App() {
   const [authed, setAuthed] = useState(() => isAuthenticated());
   const [tab, setTab] = useState<AppTab>("analyze");
   const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<ParsePreview | null>(null);
+  const [parsing, setParsing] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [failed, setFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,13 +64,35 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [panelVisible]);
 
-  const handleAnalyze = async () => {
+  const handlePreview = async () => {
+    if (!file || parsing || processing) return;
+    setParsing(true);
+    setError(null);
+    setResult(null);
+    setFailed(false);
+    setPanelVisible(false);
+    setPreview(null);
+    try {
+      const data = await parseOrderPreview(file);
+      setPreview(data);
+      window.setTimeout(() => {
+        document.getElementById("parse-preview")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 60);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const handleConfirmSearch = async () => {
     if (!file || processing) return;
 
     setProcessing(true);
     setFailed(false);
     setError(null);
     setResult(null);
+    setPreview(null);
     setPanelVisible(true);
     resetProgress();
 
@@ -96,8 +121,9 @@ export default function App() {
   };
 
   const handleClear = () => {
-    if (processing) return;
+    if (processing || parsing) return;
     setFile(null);
+    setPreview(null);
     setResult(null);
     setError(null);
     setFailed(false);
@@ -110,6 +136,16 @@ export default function App() {
     setAuthed(false);
     setTab("analyze");
     handleClear();
+  };
+
+  const handleRerun = (entry: OrderHistoryEntry) => {
+    setTab("analyze");
+    setError(
+      `To re-run “${entry.reference || entry.fileName}”, upload the original PDF again, preview line items, then confirm the price search.`,
+    );
+    setPreview(null);
+    setResult(null);
+    setPanelVisible(false);
   };
 
   if (!authed) {
@@ -131,16 +167,17 @@ export default function App() {
                   <span className="hero-card__eyebrow">Orders</span>
                   <h2>Upload PDF for price matching</h2>
                   <p>
-                    Parse Henry Schein line items, search public suppliers, and export
-                    three negotiation-ready Excel reports.
+                    First preview parsed line items, then confirm to run the full supplier
+                    search and Excel reports.
                   </p>
                 </div>
 
                 <UploadZone
                   file={file}
                   onFileSelect={(f) => {
-                    if (!processing) {
+                    if (!processing && !parsing) {
                       setFile(f);
+                      setPreview(null);
                       setResult(null);
                       setError(null);
                       setFailed(false);
@@ -149,33 +186,28 @@ export default function App() {
                     }
                   }}
                   onInvalidFile={() => setError("Please select a PDF file.")}
-                  disabled={processing}
+                  disabled={processing || parsing}
                 />
 
                 <div className="toolbar">
                   <button
                     type="button"
                     className="btn btn--primary btn--lg"
-                    disabled={!file || processing || !apiConnected}
-                    onClick={handleAnalyze}
+                    disabled={!file || processing || parsing || !apiConnected}
+                    onClick={() => void handlePreview()}
                   >
-                    {processing ? (
+                    {parsing ? (
                       <>
-                        <span className="spinner" aria-hidden /> Analyzing order…
+                        <span className="spinner" aria-hidden /> Parsing PDF…
                       </>
                     ) : (
-                      <>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-                          <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                        </svg>
-                        Start analysis
-                      </>
+                      "Preview line items"
                     )}
                   </button>
                   <button
                     type="button"
                     className="btn btn--soft"
-                    disabled={!file || processing}
+                    disabled={!file || processing || parsing}
                     onClick={handleClear}
                   >
                     Clear
@@ -190,6 +222,17 @@ export default function App() {
                   </div>
                 )}
               </section>
+
+              {preview && !processing && (
+                <div id="parse-preview">
+                  <ParsePreviewPanel
+                    preview={preview}
+                    confirming={processing}
+                    onConfirm={() => void handleConfirmSearch()}
+                    onCancel={() => setPreview(null)}
+                  />
+                </div>
+              )}
 
               {panelVisible && (
                 <ProcessingPanel
@@ -213,7 +256,7 @@ export default function App() {
               {result && !processing && <ResultsPanel result={result} />}
             </div>
           ) : tab === "history" ? (
-            <HistoryPanel history={history} />
+            <HistoryPanel history={history} onRerun={handleRerun} />
           ) : (
             <SettingsPanel onCredentialsChanged={() => setAdminName(getLoginUser())} />
           )}

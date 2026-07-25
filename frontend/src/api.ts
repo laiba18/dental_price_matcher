@@ -1,4 +1,12 @@
-import type { OrderRunResult, ProgressEvent } from "./types";
+import type {
+  ApiKeyInfo,
+  OrderHistoryEntry,
+  OrderRunResult,
+  ParsePreview,
+  ProgressEvent,
+  SupplierSource,
+} from "./types";
+import { mapHistoryRow } from "./history";
 
 const STORAGE_KEY = "dental_api_base";
 
@@ -71,9 +79,6 @@ export function subscribeToJob(
   es.onerror = () => es.close();
   return () => es.close();
 }
-
-import type { OrderHistoryEntry } from "./types";
-import { mapHistoryRow } from "./history";
 
 export async function fetchOrderHistory(): Promise<OrderHistoryEntry[]> {
   const res = await fetch(`${getApiBase()}/orders/history`);
@@ -161,4 +166,56 @@ export function formatDateTime(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(iso));
+}
+
+export async function parseOrderPreview(file: File): Promise<ParsePreview> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${getApiBase()}/orders/parse`, { method: "POST", body: form });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Parse failed (${res.status})`);
+  return data as ParsePreview;
+}
+
+export async function fetchApiKeys(): Promise<{ keys: ApiKeyInfo[]; llm_provider: string }> {
+  const res = await fetch(`${getApiBase()}/admin/api-keys`);
+  if (!res.ok) throw new Error("Could not load API keys");
+  return res.json();
+}
+
+export async function saveApiKeys(payload: {
+  keys?: Record<string, string>;
+  llm_provider?: string;
+}): Promise<{ keys: ApiKeyInfo[]; llm_provider: string }> {
+  const res = await fetch(`${getApiBase()}/admin/api-keys`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Could not save API keys");
+  return res.json();
+}
+
+export async function testApiKey(provider: string): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch(`${getApiBase()}/admin/api-keys/${provider}/test`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || "Test failed");
+  return data;
+}
+
+export async function fetchSuppliers(): Promise<{ sources: SupplierSource[]; types: string[] }> {
+  const res = await fetch(`${getApiBase()}/admin/suppliers`);
+  if (!res.ok) throw new Error("Could not load suppliers");
+  return res.json();
+}
+
+export async function saveSuppliers(sources: SupplierSource[]): Promise<SupplierSource[]> {
+  const res = await fetch(`${getApiBase()}/admin/suppliers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sources }),
+  });
+  if (!res.ok) throw new Error("Could not save suppliers");
+  const data = await res.json();
+  return data.sources as SupplierSource[];
 }

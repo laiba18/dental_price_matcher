@@ -7,6 +7,14 @@ interface ResultsPanelProps {
 
 export function ResultsPanel({ result }: ResultsPanelProps) {
   const total = result.total ?? result.computed_total;
+  const stats = [
+    { label: "Exact matches", value: result.exact_matches ?? "—" },
+    { label: "Near matches", value: result.near_matches ?? "—" },
+    { label: "Alternate candidates", value: result.alternate_candidates ?? "—" },
+    { label: "No public price", value: result.no_public_price ?? "—" },
+    { label: "Est. total savings", value: formatMoney(result.estimated_savings) },
+    { label: "Items processed", value: result.items_processed ?? result.items },
+  ];
 
   return (
     <section className="results">
@@ -19,7 +27,7 @@ export function ResultsPanel({ result }: ResultsPanelProps) {
         </div>
         <div>
           <h2>Analysis complete</h2>
-          <p>Your reports are ready to download.</p>
+          <p>Summary below — then download the Excel reports.</p>
         </div>
       </div>
 
@@ -35,6 +43,18 @@ export function ResultsPanel({ result }: ResultsPanelProps) {
         <div className="summary-card">
           <span className="summary-card__label">Order total</span>
           <span className="summary-card__value">{formatMoney(total)}</span>
+        </div>
+      </div>
+
+      <div className="results-stats">
+        <h3 className="downloads__title">Match summary</h3>
+        <div className="results-stats__grid">
+          {stats.map((s) => (
+            <div key={s.label} className="results-stats__card">
+              <span className="results-stats__value">{s.value}</span>
+              <span className="results-stats__label">{s.label}</span>
+            </div>
+          ))}
         </div>
       </div>
 

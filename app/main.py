@@ -29,8 +29,9 @@ except Exception:
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from . import ai, db, jobs, matcher, parser, reports
+from . import admin_config, ai, db, jobs, matcher, parser, reports
 from . import search as search_mod
 from .models import EquivalencyFinding, ItemResult
 from .paths import init_data_dirs
@@ -207,6 +208,7 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
         "price_match_report": str(p1),
         "alternate_purchase_list": str(p2),
         "evidence_file": str(p3),
+        **reports.compute_run_stats(results, findings),
     }
     jobs.emit("step_complete", step="reports", message="Reports ready for download")
     return summary
@@ -247,6 +249,93 @@ app.add_middleware(
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
+
+@app.on_event("startup")
+def _admin_bootstrap():
+    try:
+        admin_config.load_sources()
+    except Exception:
+        log.exception("Supplier sources bootstrap failed")
+
+
+# ── Admin: API keys ──────────────────────────────────────────────────────────
+
+class ApiKeysUpdate(BaseModel):
+    keys: dict[str, str] | None = None
+    llm_provider: str | None = None
+
+
+@app.get("/admin/api-keys")
+def admin_get_api_keys():
+    return admin_config.get_api_keys_public()
+
+
+@app.put("/admin/api-keys")
+def admin_put_api_keys(body: ApiKeysUpdate):
+    return admin_config.update_api_keys(body.model_dump(exclude_none=True))
+
+
+@app.post("/admin/api-keys/{provider}/test")
+def admin_test_api_key(provider: str):
+    return admin_config.test_api_key(provider)
+
+
+# ── Admin: supplier sources ──────────────────────────────────────────────────
+
+class SupplierSourcesUpdate(BaseModel):
+    sources: list[dict]
+
+
+@app.get("/admin/suppliers")
+def admin_get_suppliers():
+    return {"sources": admin_config.load_sources(), "types": list(admin_config.SOURCE_TYPES)}
+
+
+@app.put("/admin/suppliers")
+def admin_put_suppliers(body: SupplierSourcesUpdate):
+    return {"sources": admin_config.save_sources(body.sources)}
+
+
+# ── Orders: parse preview ────────────────────────────────────────────────────
+
+@app.post("/orders/parse")
+async def parse_order(file: UploadFile):
+    """Parse PDF only — return line items for preview before expensive search."""
+    log.info("POST /orders/parse — filename=%s", file.filename)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+    try:
+        order = parser.parse_order_pdf(tmp_path)
+        if not order.items:
+            return JSONResponse({"error": "No line items extracted from PDF"}, status_code=400)
+        return {
+            "reference": order.reference,
+            "order_date": order.order_date,
+            "ship_to_name": order.ship_to_name,
+            "total": order.total_price,
+            "computed_total": order.computed_total,
+            "items": [
+                {
+                    "sku": i.schein_sku,
+                    "description": i.description,
+                    "qty": i.qty,
+                    "uom": i.uom,
+                    "unit_price": i.unit_price,
+                    "extended_price": i.extended_price,
+                }
+                for i in order.items
+            ],
+        }
+    except Exception as e:
+        log.exception("Parse preview failed")
+        return JSONResponse({"error": str(e)}, status_code=400)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _run_job_in_thread(job_id: str, tmp_path: str, filename: str) -> None:
