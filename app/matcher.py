@@ -343,6 +343,18 @@ def variant_mismatch(item: OrderLineItem, c: PriceCandidate) -> Optional[str]:
     cf_form = next((w for w in _WRONG_FORM if w in cand_name.lower()), None)
     if cf_form and not any(w in ordered_txt.lower() for w in _WRONG_FORM):
         return f"form mismatch (page is a '{cf_form}', order is the material)"
+    # ---- KIT vs REFILL: a "Bottle Kit" (primer+adhesive+applicators) is a
+    # fundamentally different SKU from a "Refill" (adhesive only). Fire only
+    # when one side says "kit" and the other says "refill" (or vice versa).
+    _o_lo, _c_lo = ordered_txt.lower(), cand_all.lower()
+    _o_kit = bool(re.search(r"\bkit\b", _o_lo))
+    _o_ref = bool(re.search(r"\brefill\b", _o_lo))
+    _c_kit = bool(re.search(r"\bkit\b", _c_lo))
+    _c_ref = bool(re.search(r"\brefill\b", _c_lo))
+    if _o_kit and not _o_ref and _c_ref and not _c_kit:
+        return "form mismatch (ordered Kit, page is a Refill)"
+    if _o_ref and not _o_kit and _c_kit and not _c_ref:
+        return "form mismatch (ordered Refill, page is a Kit)"
     # ---- HOUSE BRAND: a Henry Schein house brand (Criterion/Acclean/Maxima) is
     # sold by no one else, so a page that does NOT name that brand is a different
     # brand's generic substitute (net32 'Aurelia Sonic' gloves for a 'Criterion
