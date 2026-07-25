@@ -24,6 +24,48 @@ export interface OrderRunResult {
   price_match_report: string;
   alternate_purchase_list: string;
   evidence_file: string;
+  exact_matches?: number;
+  near_matches?: number;
+  alternate_candidates?: number;
+  no_public_price?: number;
+  estimated_savings?: number;
+  items_processed?: number;
+}
+
+export interface ParsedLineItem {
+  sku: string;
+  description: string;
+  qty: number;
+  uom: string;
+  unit_price: number;
+  extended_price: number;
+}
+
+export interface ParsePreview {
+  reference: string | null;
+  order_date?: string | null;
+  ship_to_name?: string | null;
+  total: number | null;
+  computed_total: number;
+  items: ParsedLineItem[];
+}
+
+export interface ApiKeyInfo {
+  id: string;
+  label: string;
+  env: string;
+  hint: string;
+  configured: boolean;
+  masked: string;
+}
+
+export interface SupplierSource {
+  id: string;
+  domain: string;
+  label: string;
+  enabled: boolean;
+  type: "dental_supplier" | "marketplace" | "aggregator" | "other";
+  priority: number;
 }
 
 export interface OrderHistoryEntry {

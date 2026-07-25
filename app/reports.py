@@ -215,11 +215,11 @@ def _basis_text(c: PriceCandidate) -> str:
 
 PM_HEADERS = ["Schein SKU", "Manufacturer Part\nNumber", "Description", "Qty\nOrder",
               "Schein Unit\nPrice", "Best Public Price\nFound", "Match Score",
-              "Source Site", "Product URL Link",
+              "Source Site", "Source Type", "Product URL Link",
               'Pack/Qty Condition\n(e.g. "6-pack price")',
               "Why Not Exact / Notes", "Savings Per\nUnit", "Total Savings"]
-PM_WIDTHS = [11, 15, 38, 7, 12, 13, 17, 17, 42, 18, 40, 12, 12]
-PM_WRAP = {3, 9, 10, 11}
+PM_WIDTHS = [11, 15, 38, 7, 12, 13, 17, 17, 14, 42, 18, 40, 12, 12]
+PM_WRAP = {3, 10, 11, 12}
 OPTION_FONT = Font(italic=True, color="7F7F7F")
 
 _OPT_RANK = {"exact": 0, "approximate": 1, "rejected": 2, "unverified": 3}
@@ -608,16 +608,28 @@ def _pick_marketplace(item, mcands: List[PriceCandidate], key: str):
     return None, f"closest listing did not qualify: {why}"
 
 
+def _source_type_for(c, *, marketplace: str | None = None) -> str:
+    from .admin_config import classify_source_type
+    return classify_source_type(
+        getattr(c, "url", None) or getattr(c, "source_site", None),
+        marketplace=marketplace or getattr(c, "marketplace", None),
+        is_generic=bool(getattr(c, "is_generic_equivalent", False)),
+    )
+
+
 def _write_marketplace_rows(ws, r: ItemResult) -> None:
     """The three 🅐/🅦/🅔 rows for one item group (always all three)."""
     item = r.item
     for key, label, score_label in MARKETPLACES:
         name = label.split(" ", 1)[1]
         best, why = _pick_marketplace(item, r.marketplace_candidates or [], key)
+        src_type = "Marketplace"
         if best is not None:
             per_unit = round(item.unit_price - best.price, 2)
             total = round(per_unit * item.qty, 2)
             generic = why == "generic"
+            if generic:
+                src_type = "Generic/Equivalent"
             if best.price < item.unit_price:
                 row_label, sp, st = f"   {label}", per_unit, total
                 note = (f"{name} price — ${per_unit:,.2f}/unit below Schein · same "
@@ -635,28 +647,27 @@ def _write_marketplace_rows(ws, r: ItemResult) -> None:
             extra = _clean(best.notes)
             if extra:
                 note += f" · {extra}"
-            ws.append(["", "", row_label, item.qty, item.unit_price, best.price,
-                       score_label, best.source_site, best.url,
+            # Schein price / qty carried on every marketplace option row
+            ws.append([item.schein_sku, _dash(item.mpn), row_label, item.qty, item.unit_price,
+                       best.price, score_label, best.source_site, src_type, best.url,
                        _dash(_clean(best.pack_condition)), note, sp, st])
             ridx = ws.max_row
             _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                       link_col=9, url=best.url)
-            _money(ws, ridx, [5, 6, 12, 13])
+                       link_col=10, url=best.url)
+            _money(ws, ridx, [5, 6, 13, 14])
         else:
-            ws.append(["", "", f"   {label}", item.qty, item.unit_price,
-                       f"not on {name}", score_label, "—", "", "—",
+            ws.append([item.schein_sku, _dash(item.mpn), f"   {label}", item.qty, item.unit_price,
+                       f"not on {name}", score_label, "—", src_type, "", "—",
                        f"No matching {name} product found — {why}", "", ""])
             ridx = ws.max_row
             _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP)
             _money(ws, ridx, [5])
-        # brand tint — fill the whole row and colour the marketplace label
         fill, brand_font = MKT_STYLE[key]
         for col in range(1, len(PM_HEADERS) + 1):
             ws.cell(row=ridx, column=col).fill = fill
         ws.cell(row=ridx, column=3).font = brand_font
-        # keep the clickable link visibly a link (brand colour on the label only)
         if best is not None and best.url:
-            ws.cell(row=ridx, column=9).font = LINK_FONT
+            ws.cell(row=ridx, column=10).font = LINK_FONT
         ws.row_dimensions[ridx].height = 44
 
 
@@ -742,27 +753,28 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 ws.append([r.item.schein_sku, _dash(r.item.mpn), r.item.description,
                            r.item.qty, r.item.unit_price, ref.price,
                            f"REFERENCE — {_score_label(r.item, ref)}",
-                           ref.source_site, ref.url, _dash(_clean(ref.pack_condition)),
+                           ref.source_site, _source_type_for(ref), ref.url,
+                           _dash(_clean(ref.pack_condition)),
                            f"NO CHEAPER SUPPLIER — closest exact match is ${ref.price:,.2f} "
                            f"(${over:,.2f}/unit ABOVE Schein ${r.item.unit_price:,.2f}); shown "
                            f"for reference. Schein is already competitive here.",
                            "", ""])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
-                           link_col=9, url=ref.url)
+                           link_col=10, url=ref.url)
                 _money(ws, ridx, [5, 6])
                 ws.row_dimensions[ridx].height = 48
             else:
                 # placeholder main row — item had no verifiable public supplier match
                 ws.append([r.item.schein_sku, _dash(r.item.mpn), r.item.description,
                            r.item.qty, r.item.unit_price, "—", "NO SUPPLIER MATCH",
-                           "—", search_fallback_url(r.item), "—",
+                           "—", "Other", search_fallback_url(r.item), "—",
                            "No public supplier listing passed verification this run — "
                            "see the Alternate Purchases sheet for near-matches.",
                            "", ""])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
-                           link_col=9, url=search_fallback_url(r.item))
+                           link_col=10, url=search_fallback_url(r.item))
                 _money(ws, ridx, [5])
             ws.row_dimensions[ridx].height = 44
         for n, c in enumerate(opts, start=1):
@@ -818,26 +830,27 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 reason = " · ".join(parts) or "Not exact — could not confirm all four criteria"
 
             reason = flag_prefix + reason   # prepend ⚠ NO SAVING / PRICE UNRELIABLE flags
+            src_type = _source_type_for(c)
 
+            # Client request: Schein unit price (and identifying cols) carry onto
+            # every option / match row for side-by-side comparison.
             if n == 1:
-                ws.append([r.item.schein_sku, _dash(r.item.mpn), r.item.description,
-                           r.item.qty, r.item.unit_price, c.price, _score_label(r.item, c),
-                           c.source_site, c.url, _dash(_clean(c.pack_condition)),
-                           reason, per_unit, total])
-                ridx = ws.max_row
-                _style_row(ws, ridx, len(PM_HEADERS), pct, band % 2 == 0, PM_WRAP,
-                           link_col=9, url=c.url, bold_cols={13})
-                _money(ws, ridx, [5, 6, 12, 13])
+                desc = r.item.description
             else:
-                ws.append(["", "", f"   ↳ Option {n}", "", "", c.price,
-                           _score_label(r.item, c), c.source_site, c.url,
-                           _dash(_clean(c.pack_condition)), reason, per_unit, total])
-                ridx = ws.max_row
-                # sub-rows stay unfilled (white) per the reference screenshot
+                desc = f"   ↳ Option {n} — {r.item.description}"
+            ws.append([r.item.schein_sku, _dash(r.item.mpn), desc,
+                       r.item.qty, r.item.unit_price, c.price, _score_label(r.item, c),
+                       c.source_site, src_type, c.url,
+                       _dash(_clean(c.pack_condition)), reason, per_unit, total])
+            ridx = ws.max_row
+            if n == 1:
+                _style_row(ws, ridx, len(PM_HEADERS), pct, band % 2 == 0, PM_WRAP,
+                           link_col=10, url=c.url, bold_cols={14})
+            else:
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                           link_col=9, url=c.url)
+                           link_col=10, url=c.url)
                 ws.cell(row=ridx, column=3).font = OPTION_FONT
-                _money(ws, ridx, [6, 12, 13])
+            _money(ws, ridx, [5, 6, 13, 14])
             ws.row_dimensions[ridx].height = 56
 
         # Labelled backorder/long-lead row: net32 flips a seller between
@@ -863,14 +876,16 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                           f"{c.source_site} is the lowest listing but is NOT in stock "
                           f"(net32 stock varies by location; verify before relying on it). "
                           f"Shown for reference below the in-stock options.")
-                ws.append(["", "", "   ↳ ⚠ Backorder", "", "", o["price"],
-                           "BACKORDER", c.source_site, c.url, "—", reason,
-                           per_unit, total])
+                ws.append([r.item.schein_sku, _dash(r.item.mpn),
+                           f"   ↳ ⚠ Backorder — {r.item.description}",
+                           r.item.qty, r.item.unit_price, o["price"],
+                           "BACKORDER", c.source_site, _source_type_for(c), c.url,
+                           "—", reason, per_unit, total])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                           link_col=9, url=c.url)
+                           link_col=10, url=c.url)
                 ws.cell(row=ridx, column=3).font = OPTION_FONT
-                _money(ws, ridx, [6, 12, 13])
+                _money(ws, ridx, [5, 6, 13, 14])
                 ws.row_dimensions[ridx].height = 56
 
         # (Out-of-stock listings are excluded from price_match entirely per client
@@ -889,25 +904,26 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
 
 # ---------------------------------------------------- alternate report ------
 
-ALT_HEADERS = ["Original Schein Product and\nSchein Price",
+ALT_HEADERS = ["Original Schein Product", "Schein Unit\nPrice",
                "Recommended Equivalent Product", "Recommended Supplier",
-               "Price of the\nEquivalent", "Product URL", "Match Score",
+               "Source Type", "Price of the\nEquivalent", "Product URL", "Match Score",
                "Equivalency Basis and Confidence Level",
                "Estimated Savings vs.\nSchein Price"]
-ALT_WIDTHS = [34, 36, 19, 12, 44, 16, 52, 20]
-ALT_WRAP = {1, 2, 7}
+ALT_WIDTHS = [34, 12, 36, 19, 14, 12, 44, 16, 48, 18]
+ALT_WRAP = {1, 3, 9}
 
 
 def _alt_row(ws, band, item, equiv_name, supplier, price, url, score_label,
-             basis, savings_cell, pct):
+             basis, savings_cell, pct, source_type: str = "Other"):
     ws.append([
-        f"{item.description}\nSKU: {item.schein_sku}  ·  Schein price: ${item.unit_price:,.2f}/unit",
-        equiv_name, supplier or "—", price, url, score_label, basis, savings_cell,
+        f"{item.description}\nSKU: {item.schein_sku}",
+        item.unit_price,
+        equiv_name, supplier or "—", source_type, price, url, score_label, basis, savings_cell,
     ])
     ridx = ws.max_row
     _style_row(ws, ridx, len(ALT_HEADERS), pct, band % 2 == 0, ALT_WRAP,
-               link_col=5, url=url)
-    _money(ws, ridx, [4, 8])
+               link_col=7, url=url)
+    _money(ws, ridx, [2, 6, 10])
     ws.row_dimensions[ridx].height = 64
     return ridx
 
@@ -957,7 +973,7 @@ def write_alternate_purchase_list(order: ParsedOrder,
         entries.append((-1, order_idx.get(f.item.schein_sku, 999), f.price or 0,
                         (f.item, f.equivalent_name, f.supplier, f.price,
                          f.url or search_fallback_url(f.item), f"{label} (table)",
-                         basis, savings, pct)))
+                         basis, savings, pct, "Generic/Equivalent")))
 
     # B — EVERY reviewable candidate that is NOT price_match-eligible, for ALL
     #     items. The alternate sheet now covers every product: pack/variant/size
@@ -991,7 +1007,7 @@ def write_alternate_purchase_list(order: ParsedOrder,
                                 (r.item, "— no public candidate found this run —", "—",
                                  None, url, "POSSIBLE (0%)",
                                  "POSSIBLE — no usable public listing found; link opens a supplier search",
-                                 "—", None)))
+                                 "—", None, "Other")))
             continue
         for c in pool:
             mismatch = _mismatch_reason(r.item, c)
@@ -1010,7 +1026,7 @@ def write_alternate_purchase_list(order: ParsedOrder,
                             (r.item, c.scraped_product_name or c.title,
                              c.source_site, c.price, c.url or search_fallback_url(r.item),
                              f"{label} ({match_score(c.criteria, c.confidence)}%)",
-                             basis, savings, pct)))
+                             basis, savings, pct, _source_type_for(c))))
         # catch-all rows: discovered links that were not priced this run
         for c in discovered:
             entries.append((8, order_idx.get(r.item.schein_sku, 999), 1e9,
@@ -1020,7 +1036,7 @@ def write_alternate_purchase_list(order: ParsedOrder,
                              "DISCOVERED — found during search but not priced this run "
                              "(per-item scrape cap reached). Open the link to check the "
                              "price, or raise SCRAPE_CAP_PER_ITEM to price more per item.",
-                             "—", None)))
+                             "—", None, _source_type_for(c))))
 
     entries.sort(key=lambda e: (e[0], e[1], e[2]))
     for band, (_, _, _, args) in enumerate(entries):
@@ -1042,25 +1058,27 @@ def write_evidence_file(order: ParsedOrder, results: List[ItemResult],
     ws.title = "All Findings"
     title = (f"Background Evidence  ·  Ref: {order.reference or '—'}"
              f"  ·  Generated: {_now()}")
-    headers = ["Schein SKU", "Description", "Candidate Title", "Source Site",
-               "Product URL", "Price", "Pack\nQty", "Pack/Qty Condition",
-               "Match Type", "Match\nScore", "Confidence", "Brand✓", "Name✓",
-               "Size✓", "Pack✓", "Notes / Rejection Reason"]
-    widths = [11, 32, 36, 16, 44, 11, 7, 18, 12, 9, 10, 6, 6, 6, 6, 42]
+    headers = ["Schein SKU", "Description", "Schein Unit\nPrice", "Candidate Title",
+               "Source Site", "Source Type", "Product URL", "Price", "Pack\nQty",
+               "Pack/Qty Condition", "Match Type", "Match\nScore", "Confidence",
+               "Brand✓", "Name✓", "Size✓", "Pack✓", "Notes / Rejection Reason"]
+    widths = [11, 30, 12, 34, 16, 14, 42, 11, 7, 18, 12, 9, 10, 6, 6, 6, 6, 40]
     _title_block(ws, title, "Every price found, every condition, every rejection — nothing discarded",
                  len(headers), headers, widths)
     band = 0
     for r in results:
         all_cands = list(r.candidates) + list(getattr(r, "marketplace_candidates", None) or [])
         if not all_cands:
-            ws.append([r.item.schein_sku, r.item.description,
-                       "— no public candidates found —", "—", "—",
+            ws.append([r.item.schein_sku, r.item.description, r.item.unit_price,
+                       "— no public candidates found —", "—", "Other", "—",
                        None, None, "—", "none", 0, 0, "", "", "", "", "—"])
-            _style_row(ws, ws.max_row, len(headers), None, band % 2 == 0, {2, 3, 16})
+            _style_row(ws, ws.max_row, len(headers), None, band % 2 == 0, {2, 4, 18})
+            _money(ws, ws.max_row, [3])
             band += 1
         for c in all_cands:
             ws.append([
-                r.item.schein_sku, r.item.description, c.title, c.source_site,
+                r.item.schein_sku, r.item.description, r.item.unit_price,
+                c.title, c.source_site, _source_type_for(c),
                 c.url, c.price, c.pack_qty, _dash(_clean(c.pack_condition)),
                 c.match_type, match_score(c.criteria, c.confidence), c.confidence,
                 *("Y" if c.criteria.get(k) else ("N" if k in c.criteria else "")
@@ -1068,8 +1086,8 @@ def write_evidence_file(order: ParsedOrder, results: List[ItemResult],
                 c.rejected_reason or _clean(c.notes) or "—",
             ])
             _style_row(ws, ws.max_row, len(headers), None, band % 2 == 0,
-                       {2, 3, 8, 16}, link_col=5, url=c.url)
-            _money(ws, ws.max_row, [6])
+                       {2, 4, 10, 18}, link_col=7, url=c.url)
+            _money(ws, ws.max_row, [3, 8])
             band += 1
 
     ws2 = wb.create_sheet("Equivalency Findings")
@@ -1129,3 +1147,35 @@ def write_evidence_file(order: ParsedOrder, results: List[ItemResult],
     wb.save(out)
     log.info("Evidence file written → %s", out.name)
     return out
+
+
+def compute_run_stats(results: List[ItemResult], findings: List[EquivalencyFinding]) -> dict:
+    """Summary counters for the results dashboard panel."""
+    exact = 0
+    near = 0
+    no_price = 0
+    estimated_savings = 0.0
+    for r in results:
+        opts = _select_options(r)
+        if opts:
+            best = opts[0]
+            if _is_exact_cand(r.item, best):
+                exact += 1
+            else:
+                near += 1
+            if best.price is not None and best.price < r.item.unit_price:
+                estimated_savings += (r.item.unit_price - best.price) * r.item.qty
+        else:
+            no_price += 1
+    alt = sum(
+        1 for f in findings
+        if f.confidence_level in ("exact_equivalent", "close_equivalent")
+    )
+    return {
+        "exact_matches": exact,
+        "near_matches": near,
+        "alternate_candidates": alt,
+        "no_public_price": no_price,
+        "estimated_savings": round(estimated_savings, 2),
+        "items_processed": len(results),
+    }
