@@ -55,6 +55,7 @@ BAND_FILL = PatternFill("solid", fgColor="EAF3EA")     # light green banding
 GREEN_FILL = PatternFill("solid", fgColor="C6EFCE")    # >10% savings
 YELLOW_FILL = PatternFill("solid", fgColor="FFEB9C")   # 5–10% savings
 BOLD = Font(bold=True)
+BOLD_RED = Font(bold=True, color="FF0000")
 _thin = Side(style="thin", color="C9C9C9")
 CELL_BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 _green = Side(style="medium", color="538135")
@@ -141,7 +142,8 @@ def _title_block(ws, title: str, legend: str, ncols: int,
 
 def _style_row(ws, ridx: int, ncols: int, savings_pct: Optional[float],
                band: bool, wrap_cols: set[int], link_col: Optional[int] = None,
-               url: str = "", bold_cols: set[int] = frozenset()):
+               url: str = "", bold_cols: set[int] = frozenset(),
+               red_bold_cols: set[int] = frozenset()):
     fill = None
     if savings_pct is not None:
         fill = GREEN_FILL if savings_pct > 10 else (YELLOW_FILL if 5 <= savings_pct <= 10 else None)
@@ -153,7 +155,9 @@ def _style_row(ws, ridx: int, ncols: int, savings_pct: Optional[float],
         cell.alignment = WRAP if col in wrap_cols else Alignment(vertical="center")
         if fill is not None:
             cell.fill = fill
-        if col in bold_cols:
+        if col in red_bold_cols:
+            cell.font = BOLD_RED
+        elif col in bold_cols:
             cell.font = BOLD
     if link_col and url:
         cell = ws.cell(row=ridx, column=link_col)
@@ -217,8 +221,10 @@ PM_HEADERS = ["Schein SKU", "Manufacturer Part\nNumber", "Description", "Qty\nOr
               "Schein Unit\nPrice", "Best Public Price\nFound", "Match Score",
               "Source Site", "Source Type", "Product URL Link",
               'Pack/Qty Condition\n(e.g. "6-pack price")',
-              "Why Not Exact / Notes", "Savings Per\nUnit", "Total Savings"]
-PM_WIDTHS = [11, 15, 38, 7, 12, 13, 17, 17, 14, 42, 18, 40, 12, 12]
+              "Why Not Exact / Notes",
+              "Schein\nPrice", "Best\nPrice",
+              "Savings Per\nUnit", "Total Savings"]
+PM_WIDTHS = [11, 15, 38, 7, 12, 13, 17, 17, 14, 42, 18, 40, 12, 12, 12, 12]
 PM_WRAP = {3, 10, 11, 12}
 OPTION_FONT = Font(italic=True, color="7F7F7F")
 
@@ -491,24 +497,19 @@ def _select_options(r: ItemResult, options_per_item: int = 3) -> list:
     return opts
 
 
-# ------------------------------------------- marketplace rows (🅐/🅦/🅔) -----
-# Three dedicated rows per item — Amazon, Walmart, eBay — appended after the
-# regular options. A marketplace PRICE is shown only under the strict client
-# rule: same product AND same pack/size verified on the listing page (brand must
-# match too, or the MPN must appear on the listing). Anything less renders as a
-# "not on <marketplace>" row with the reason.
+# ------------------------------------------- marketplace rows (🅐/🅦) --------
+# Dedicated rows per item — Amazon, Walmart — appended after the regular
+# options. A marketplace PRICE is shown only under the strict client rule:
+# same product AND same pack/size verified on the listing page (brand must
+# match too, or the MPN must appear on the listing). Anything less renders
+# as a "not on <marketplace>" row with the reason.
 
 MARKETPLACES = [("amazon", "🅐 Amazon", "AMAZON"),
-                ("walmart", "🅦 Walmart", "WALMART"),
-                ("ebay", "🅔 eBay", "EBAY")]
+                ("walmart", "🅦 Walmart", "WALMART")]
 
-# Per-marketplace brand tint: (row fill, label font color). The Amazon peach/orange
-# matches the client's hand-styled reference; Walmart gets its blue, eBay its green,
-# so the three rows are instantly distinguishable at a glance.
 MKT_STYLE = {
     "amazon":  (PatternFill("solid", fgColor="FFE8CC"), Font(bold=True, color="C45500")),
     "walmart": (PatternFill("solid", fgColor="DCEBFB"), Font(bold=True, color="0071CE")),
-    "ebay":    (PatternFill("solid", fgColor="E4F3DC"), Font(bold=True, color="4C8B1F")),
 }
 
 
@@ -618,7 +619,7 @@ def _source_type_for(c, *, marketplace: str | None = None) -> str:
 
 
 def _write_marketplace_rows(ws, r: ItemResult) -> None:
-    """The three 🅐/🅦/🅔 rows for one item group (always all three)."""
+    """The 🅐/🅦 rows for one item group."""
     item = r.item
     for key, label, score_label in MARKETPLACES:
         name = label.split(" ", 1)[1]
@@ -650,18 +651,20 @@ def _write_marketplace_rows(ws, r: ItemResult) -> None:
             # Schein price / qty carried on every marketplace option row
             ws.append([item.schein_sku, _dash(item.mpn), row_label, item.qty, item.unit_price,
                        best.price, score_label, best.source_site, src_type, best.url,
-                       _dash(_clean(best.pack_condition)), note, sp, st])
+                       _dash(_clean(best.pack_condition)), note,
+                       item.unit_price, best.price, sp, st])
             ridx = ws.max_row
             _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                       link_col=10, url=best.url)
-            _money(ws, ridx, [5, 6, 13, 14])
+                       link_col=10, url=best.url, red_bold_cols={14})
+            _money(ws, ridx, [5, 6, 13, 14, 15, 16])
         else:
             ws.append([item.schein_sku, _dash(item.mpn), f"   {label}", item.qty, item.unit_price,
                        f"not on {name}", score_label, "—", src_type, "", "—",
-                       f"No matching {name} product found — {why}", "", ""])
+                       f"No matching {name} product found — {why}",
+                       item.unit_price, "", "", ""])
             ridx = ws.max_row
             _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP)
-            _money(ws, ridx, [5])
+            _money(ws, ridx, [5, 13])
         fill, brand_font = MKT_STYLE[key]
         for col in range(1, len(PM_HEADERS) + 1):
             ws.cell(row=ridx, column=col).fill = fill
@@ -722,7 +725,7 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
              f"  ·  Generated: {_now()}")
     legend = ("🟢 >10% savings   🟡 5–10% savings   Main row = best option (EXACT when "
               "available) · ↳ Option 2-3 = next-closest matches with reasoning · "
-              "🅐/🅦/🅔 = Amazon/Walmart/eBay check (price shown only when the same "
+              "🅐/🅦 = Amazon/Walmart check (price shown only when the same "
               "product AND pack is verified) · GATED = login pricing, verify manually")
     _title_block(ws, title, legend, len(PM_HEADERS), PM_HEADERS, PM_WIDTHS)
 
@@ -732,7 +735,7 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
         # pack/variant priority). Same selection the alternate writer uses to
         # exclude these rows so they aren't repeated there. EVERY item gets a
         # group (client rule): items with no supplier match render a placeholder
-        # main row so their Amazon/Walmart/eBay rows still show; they sort last.
+        # main row so their Amazon/Walmart rows still show; they sort last.
         opts = _select_options(r, options_per_item)
         if opts:
             best_total = max(round((r.item.unit_price - c.price) * r.item.qty, 2)
@@ -758,11 +761,11 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                            f"NO CHEAPER SUPPLIER — closest exact match is ${ref.price:,.2f} "
                            f"(${over:,.2f}/unit ABOVE Schein ${r.item.unit_price:,.2f}); shown "
                            f"for reference. Schein is already competitive here.",
-                           "", ""])
+                           r.item.unit_price, ref.price, "", ""])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
-                           link_col=10, url=ref.url)
-                _money(ws, ridx, [5, 6])
+                           link_col=10, url=ref.url, red_bold_cols={14})
+                _money(ws, ridx, [5, 6, 13, 14])
                 ws.row_dimensions[ridx].height = 48
             else:
                 # placeholder main row — item had no verifiable public supplier match
@@ -771,11 +774,11 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                            "—", "Other", search_fallback_url(r.item), "—",
                            "No public supplier listing passed verification this run — "
                            "see the Alternate Purchases sheet for near-matches.",
-                           "", ""])
+                           r.item.unit_price, "—", "", ""])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, band % 2 == 0, PM_WRAP,
                            link_col=10, url=search_fallback_url(r.item))
-                _money(ws, ridx, [5])
+                _money(ws, ridx, [5, 13])
             ws.row_dimensions[ridx].height = 44
         for n, c in enumerate(opts, start=1):
             per_unit = round(r.item.unit_price - c.price, 2)
@@ -841,16 +844,17 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
             ws.append([r.item.schein_sku, _dash(r.item.mpn), desc,
                        r.item.qty, r.item.unit_price, c.price, _score_label(r.item, c),
                        c.source_site, src_type, c.url,
-                       _dash(_clean(c.pack_condition)), reason, per_unit, total])
+                       _dash(_clean(c.pack_condition)), reason,
+                       r.item.unit_price, c.price, per_unit, total])
             ridx = ws.max_row
             if n == 1:
                 _style_row(ws, ridx, len(PM_HEADERS), pct, band % 2 == 0, PM_WRAP,
-                           link_col=10, url=c.url, bold_cols={14})
+                           link_col=10, url=c.url, bold_cols={16}, red_bold_cols={14})
             else:
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                           link_col=10, url=c.url)
+                           link_col=10, url=c.url, red_bold_cols={14})
                 ws.cell(row=ridx, column=3).font = OPTION_FONT
-            _money(ws, ridx, [5, 6, 13, 14])
+            _money(ws, ridx, [5, 6, 13, 14, 15, 16])
             ws.row_dimensions[ridx].height = 56
 
         # Labelled backorder/long-lead row: net32 flips a seller between
@@ -880,25 +884,26 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                            f"   ↳ ⚠ Backorder — {r.item.description}",
                            r.item.qty, r.item.unit_price, o["price"],
                            "BACKORDER", c.source_site, _source_type_for(c), c.url,
-                           "—", reason, per_unit, total])
+                           "—", reason,
+                           r.item.unit_price, o["price"], per_unit, total])
                 ridx = ws.max_row
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
-                           link_col=10, url=c.url)
+                           link_col=10, url=c.url, red_bold_cols={14})
                 ws.cell(row=ridx, column=3).font = OPTION_FONT
-                _money(ws, ridx, [5, 6, 13, 14])
+                _money(ws, ridx, [5, 6, 13, 14, 15, 16])
                 ws.row_dimensions[ridx].height = 56
 
         # (Out-of-stock listings are excluded from price_match entirely per client
         # rule 2026-07-15 — no OOS reference row. OOS candidates already never pool
         # or headline; they remain in the Alternate Purchases / Evidence sheets.)
 
-        # the three 🅐/🅦/🅔 marketplace rows — always rendered, found or not
+        # 🅐/🅦 marketplace rows — always rendered, found or not
         _write_marketplace_rows(ws, r)
         band += 1
     wb.save(out)
     n_rows = sum(len(o) for _, _, o in groups)
     log.info("Price match report: %d item(s), %d option row(s) + %d marketplace "
-             "row(s) → %s", len(groups), n_rows, 3 * len(groups), out.name)
+             "row(s) → %s", len(groups), n_rows, len(MARKETPLACES) * len(groups), out.name)
     return out
 
 
