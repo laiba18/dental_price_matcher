@@ -37,8 +37,21 @@ from .models import OrderLineItem, PriceCandidate
 log = logging.getLogger(__name__)
 fc_credit_log = logging.getLogger("firecrawl.credits")
 
-SERPAPI_KEY = os.environ.get("SERPAPI_API_KEY", "")
-FIRECRAWL_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
+def _parse_keys(multi_env: str, single_env: str) -> list[str]:
+    raw = os.environ.get(multi_env, "")
+    if raw:
+        return [k.strip() for k in raw.split(",") if k.strip()]
+    single = os.environ.get(single_env, "")
+    return [single] if single else []
+
+_SERPAPI_KEYS = _parse_keys("SERPAPI_API_KEYS", "SERPAPI_API_KEY")
+_FIRECRAWL_KEYS = _parse_keys("FIRECRAWL_API_KEYS", "FIRECRAWL_API_KEY")
+
+_serp_key_state = {"idx": 0}
+_fc_key_state = {"idx": 0}
+
+SERPAPI_KEY = _SERPAPI_KEYS[0] if _SERPAPI_KEYS else ""
+FIRECRAWL_KEY = _FIRECRAWL_KEYS[0] if _FIRECRAWL_KEYS else ""
 FIRECRAWL_MAX_SCRAPES = int(os.environ.get("FIRECRAWL_MAX_SCRAPES_PER_RUN", "150"))
 _fc_state = {
     "exhausted": False,
@@ -50,18 +63,41 @@ _fc_state = {
 _fc_lock = threading.Lock()
 
 
+def _rotate_firecrawl_key() -> bool:
+    """Try the next Firecrawl key. Returns True if a fresh key is available."""
+    global FIRECRAWL_KEY
+    with _fc_lock:
+        nxt = _fc_key_state["idx"] + 1
+        if nxt >= len(_FIRECRAWL_KEYS):
+            return False
+        _fc_key_state["idx"] = nxt
+        FIRECRAWL_KEY = _FIRECRAWL_KEYS[nxt]
+        _fc_state["exhausted"] = False
+        _fc_state["exhausted_reason"] = None
+    fc_credit_log.info(
+        "========== FIRECRAWL KEY ROTATED → key %d/%d ==========",
+        nxt + 1, len(_FIRECRAWL_KEYS))
+    return True
+
+
 def _mark_firecrawl_exhausted(reason: str, *, url: str = "", tag: str = "") -> None:
     with _fc_lock:
         if _fc_state["exhausted"]:
             return
-        _fc_state["exhausted"] = True
-        _fc_state["exhausted_reason"] = reason
     where = f" (triggered by {tag}{url[:80]})" if url else ""
     if reason == "402":
+        if _rotate_firecrawl_key():
+            fc_credit_log.warning(
+                "Firecrawl 402 on key %d — rotated to next key%s",
+                _fc_key_state["idx"], where)
+            return
+        with _fc_lock:
+            _fc_state["exhausted"] = True
+            _fc_state["exhausted_reason"] = reason
         fc_credit_log.error(
-            "========== FIRECRAWL CREDITS EXHAUSTED (HTTP 402) ==========\n"
+            "========== FIRECRAWL CREDITS EXHAUSTED (all %d keys) ==========\n"
             "First failing URL%s",
-            where,
+            len(_FIRECRAWL_KEYS), where,
         )
         from .jobs import emit_quota_limit
         emit_quota_limit(
@@ -71,6 +107,9 @@ def _mark_firecrawl_exhausted(reason: str, *, url: str = "", tag: str = "") -> N
             detail="Web page scraping is paused — some prices may be unverified.",
         )
     elif reason == "budget":
+        with _fc_lock:
+            _fc_state["exhausted"] = True
+            _fc_state["exhausted_reason"] = reason
         fc_credit_log.warning(
             "========== FIRECRAWL SCRAPE BUDGET REACHED ==========\n"
             "Per-run cap FIRECRAWL_MAX_SCRAPES_PER_RUN=%d reached.",
@@ -85,7 +124,9 @@ def _mark_firecrawl_exhausted(reason: str, *, url: str = "", tag: str = "") -> N
         )
 # Total Firecrawl credit budget for a run and the slice reserved exclusively
 # for the stage-3 supplier fallback (so open-web /search can't drain it all).
-FIRECRAWL_RUN_CREDITS = int(os.environ.get("FIRECRAWL_RUN_CREDITS", "1000"))
+FIRECRAWL_RUN_CREDITS = int(os.environ.get(
+    "FIRECRAWL_RUN_CREDITS",
+    str(1000 * max(1, len(_FIRECRAWL_KEYS)))))
 FIRECRAWL_STAGE3_RESERVE = int(os.environ.get("FIRECRAWL_STAGE3_RESERVE", "50"))
 
 
@@ -101,20 +142,26 @@ def _fc_add_credits(n: int):
 
 def reset_firecrawl_budget():
     """Call at the start of each pipeline run."""
+    global SERPAPI_KEY, FIRECRAWL_KEY
     with _fc_lock:
         _fc_state["exhausted"] = False
         _fc_state["exhausted_reason"] = None
         _fc_state["scrapes"] = 0
         _fc_state["skipped"] = 0
         _fc_state["credits"] = 0
+        _fc_key_state["idx"] = 0
+    FIRECRAWL_KEY = _FIRECRAWL_KEYS[0] if _FIRECRAWL_KEYS else ""
     _gp_state["disabled"] = False
     _gp_state["failures"] = 0
     _serp_state["exhausted"] = False
     _serp_state["consecutive_failures"] = 0
+    _serp_key_state["idx"] = 0
+    SERPAPI_KEY = _SERPAPI_KEYS[0] if _SERPAPI_KEYS else ""
     _shop_state["disabled"] = SHOP_DISABLE_AFTER == 0
     _shop_state["zero_streak"] = 0
-    log.info("Firecrawl budget reset (max %d scrapes, %d run credits)",
-             FIRECRAWL_MAX_SCRAPES, FIRECRAWL_RUN_CREDITS)
+    log.info("Budget reset (max %d scrapes, %d run credits, %d FC keys, %d serp keys)",
+             FIRECRAWL_MAX_SCRAPES, FIRECRAWL_RUN_CREDITS,
+             len(_FIRECRAWL_KEYS), len(_SERPAPI_KEYS))
 
 
 def firecrawl_stats() -> dict:
@@ -125,6 +172,8 @@ def firecrawl_stats() -> dict:
             "exhausted": _fc_state["exhausted"],
             "exhausted_reason": _fc_state["exhausted_reason"],
             "credits": _fc_state["credits"],
+            "fc_key": f"{_fc_key_state['idx'] + 1}/{len(_FIRECRAWL_KEYS)}",
+            "serp_key": f"{_serp_key_state['idx'] + 1}/{len(_SERPAPI_KEYS)}",
         }
 
 
@@ -1079,14 +1128,27 @@ def _serp_pace():
         _serp_last[0] = _time.monotonic()
 
 
+def _rotate_serpapi_key() -> bool:
+    """Try the next SerpAPI key. Returns True if a fresh key is available."""
+    global SERPAPI_KEY
+    with _serp_lock:
+        nxt = _serp_key_state["idx"] + 1
+        if nxt >= len(_SERPAPI_KEYS):
+            return False
+        _serp_key_state["idx"] = nxt
+        SERPAPI_KEY = _SERPAPI_KEYS[nxt]
+        _serp_state["exhausted"] = False
+        _serp_state["consecutive_failures"] = 0
+    log.info("========== SERPAPI KEY ROTATED → key %d/%d ==========",
+             nxt + 1, len(_SERPAPI_KEYS))
+    return True
+
+
 def _serpapi(params: dict) -> dict:
-    """SerpAPI call with pacing + 429 backoff. Once the monthly/credit quota is
-    exhausted (persistent 429), a run-level flag short-circuits further calls so
-    we fail fast instead of stalling every remaining item."""
-    # Only give up entirely after MANY consecutive failures (a real quota wall),
-    # NOT after one item — SerpAPI throttling is intermittent and recovers.
+    """SerpAPI call with pacing + 429 backoff + multi-key rotation.
+    When a key hits the quota wall, rotates to the next key automatically."""
     if _serp_state["exhausted"]:
-        raise RuntimeError("SerpAPI quota wall hit earlier this run")
+        raise RuntimeError("SerpAPI quota wall hit earlier this run (all keys exhausted)")
     params = {**params, "api_key": SERPAPI_KEY}
     last_err = None
     for attempt in range(SERP_MAX_RETRIES):
@@ -1103,7 +1165,7 @@ def _serpapi(params: dict) -> dict:
                 continue
             r.raise_for_status()
             with _serp_lock:
-                _serp_state["consecutive_failures"] = 0   # success resets the wall counter
+                _serp_state["consecutive_failures"] = 0
             from .jobs import emit
             emit("serpapi", action="search",
                  engine=params.get("engine", "google"),
@@ -1111,10 +1173,6 @@ def _serpapi(params: dict) -> dict:
             return r.json()
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
-            # 5xx is a transient server-side wall — stop retrying this call but let
-            # it count toward the give-up breaker below (a sustained 5xx storm then
-            # trips `exhausted` instead of every item grinding the full retry loop).
-            # 4xx (bad query etc.) stays an immediate raise — retrying won't help.
             if status and status >= 500:
                 last_err = e
                 break
@@ -1126,11 +1184,14 @@ def _serpapi(params: dict) -> dict:
     with _serp_lock:
         _serp_state["consecutive_failures"] += 1
         if _serp_state["consecutive_failures"] >= SERP_FAIL_GIVEUP:
+            if _rotate_serpapi_key():
+                log.warning("SerpAPI key %d exhausted after %d consecutive failures — "
+                            "rotated to next key, retrying this call.",
+                            _serp_key_state["idx"], SERP_FAIL_GIVEUP)
+                return _serpapi(params)
             _serp_state["exhausted"] = True
-            log.error("SerpAPI failed %d calls in a row — likely a real quota/rate "
-                      "wall. Remaining items this run will be skipped. Raise "
-                      "SERPAPI_MIN_INTERVAL, lower SUPPLIER_SWEEP_MAX_SITES, or upgrade plan.",
-                      SERP_FAIL_GIVEUP)
+            log.error("SerpAPI failed %d calls in a row — all %d keys exhausted.",
+                      SERP_FAIL_GIVEUP, len(_SERPAPI_KEYS))
             from .jobs import emit_quota_limit
             emit_quota_limit(
                 "serpapi",
