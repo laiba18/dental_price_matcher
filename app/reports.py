@@ -497,6 +497,89 @@ def _select_options(r: ItemResult, options_per_item: int = 3) -> list:
     return opts
 
 
+# -------------------------------- equivalency rows (cross-brand alternatives) --
+
+EQUIV_FILL = PatternFill("solid", fgColor="F3E8FF")     # light purple
+EQUIV_FONT = Font(bold=True, color="6B21A8")            # dark purple label
+
+
+def _find_equivalents(item, candidates, shown_urls: set,
+                      max_results: int = 2) -> list:
+    """Find cross-brand equivalent candidates cheaper than Schein.
+    ONLY used when no main options exist (NO SUPPLIER MATCH / REFERENCE).
+    Does NOT change any existing matching logic — purely additive surfacing."""
+    ordered_pack = getattr(item, "pack_qty", None)
+    equivs = []
+    seen_domains = set()
+    for c in candidates:
+        if c.url in shown_urls:
+            continue
+        if c.price is None or c.price >= item.unit_price:
+            continue
+        if getattr(c, "out_of_stock", False):
+            continue
+        if getattr(c, "variant_conflict", False):
+            continue
+        if getattr(c, "pack_conflict", False):
+            continue
+        if getattr(c, "price_unreliable", False):
+            continue
+        if c.scraped_product_name is None:
+            continue
+        if not (0.05 * item.unit_price <= c.price <= item.unit_price):
+            continue
+        if _is_gated(c):
+            continue
+        # pack must match if both are known
+        if ordered_pack and c.pack_qty and c.pack_qty != ordered_pack:
+            continue
+        dom = _domain(c.url)
+        if dom in seen_domains:
+            continue
+        seen_domains.add(dom)
+        equivs.append(c)
+    equivs.sort(key=lambda c: c.price)
+    return equivs[:max_results]
+
+
+def _write_equivalent_rows(ws, r: ItemResult) -> None:
+    """Render cross-brand equivalent rows for items with no main options.
+    Clearly labeled so the user knows to verify substitutability."""
+    item = r.item
+    shown = {c.url for c in (r.candidates if hasattr(r, "_shown_opts") else [])
+             if getattr(c, "_shown", False)}
+    equivs = _find_equivalents(item, r.candidates, shown)
+    if not equivs:
+        return
+    for c in equivs:
+        per_unit = round(item.unit_price - c.price, 2)
+        total = round(per_unit * item.qty, 2)
+        pack_note = ""
+        if c.pack_qty is None:
+            pack_note = " · pack size not confirmed on page — verify before ordering"
+        name_short = (c.scraped_product_name or c.title or "")[:60]
+        note = (f"EQUIVALENT PRODUCT — different brand, same product type "
+                f"({name_short}). Verify clinical equivalence before "
+                f"substituting{pack_note}.")
+        ws.append([item.schein_sku, _dash(item.mpn),
+                   f"   ↳ ⚡ Equivalent — {item.description}",
+                   item.qty, item.unit_price, c.price,
+                   f"EQUIVALENT ({c.confidence}%)" if c.confidence else "EQUIVALENT",
+                   c.source_site, _source_type_for(c), c.url,
+                   _dash(_clean(c.pack_condition)), note,
+                   item.unit_price, c.price, per_unit, total])
+        ridx = ws.max_row
+        _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
+                   link_col=10, url=c.url, red_bold_cols={14})
+        _money(ws, ridx, [5, 6, 13, 14, 15, 16])
+        for col in range(1, len(PM_HEADERS) + 1):
+            ws.cell(row=ridx, column=col).fill = EQUIV_FILL
+        ws.cell(row=ridx, column=3).font = EQUIV_FONT
+        if c.url:
+            ws.cell(row=ridx, column=10).font = LINK_FONT
+        ws.row_dimensions[ridx].height = 50
+
+
 # ------------------------------------------- marketplace rows (🅐/🅦) --------
 # Dedicated rows per item — Amazon, Walmart — appended after the regular
 # options. A marketplace PRICE is shown only under the strict client rule:
@@ -725,6 +808,7 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
              f"  ·  Generated: {_now()}")
     legend = ("🟢 >10% savings   🟡 5–10% savings   Main row = best option (EXACT when "
               "available) · ↳ Option 2-3 = next-closest matches with reasoning · "
+              "⚡ EQUIVALENT = different brand, same product type (verify before substituting) · "
               "🅐/🅦 = Amazon/Walmart check (price shown only when the same "
               "product AND pack is verified) · GATED = login pricing, verify manually")
     _title_block(ws, title, legend, len(PM_HEADERS), PM_HEADERS, PM_WIDTHS)
@@ -896,6 +980,9 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
         # (Out-of-stock listings are excluded from price_match entirely per client
         # rule 2026-07-15 — no OOS reference row. OOS candidates already never pool
         # or headline; they remain in the Alternate Purchases / Evidence sheets.)
+
+        if not opts:
+            _write_equivalent_rows(ws, r)
 
         # 🅐/🅦 marketplace rows — always rendered, found or not
         _write_marketplace_rows(ws, r)
