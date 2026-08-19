@@ -511,17 +511,34 @@ EQUIV_FONT = Font(bold=True, color="6B21A8")            # dark purple label
 # covered because they are surfaced after matching, from candidates the matcher
 # had already set aside. Client QA 2026-08-19.
 EQUIV_MEDIAN_RATIO = float(os.environ.get("EQUIV_MEDIAN_RATIO", "0.35"))
+# When peers whose SIZE was actually verified exist, they are a far better
+# baseline than every candidate indiscriminately — and a tighter ratio is safe
+# against them. The 8oz PIP order drew 21 candidates, mostly 1.25oz and 2.25oz
+# jars, dragging the all-candidate median to $68.09; tdsc's wrong-size $57.54
+# read as a healthy 85% of that and survived. Against the eleven candidates
+# confirmed to be the ordered size (median $175.99) it is 33%. Client QA
+# 2026-08-19: "This price is not for the 8oz".
+EQUIV_VERIFIED_RATIO = float(os.environ.get("EQUIV_VERIFIED_RATIO", "0.50"))
 
 
-def _peer_median_price(item, candidates) -> Optional[float]:
-    """Median price across this item's candidates, within the sane band. None
-    when too few priced candidates exist to form a meaningful baseline."""
-    prices = sorted(c.price for c in candidates
-                    if isinstance(c.price, (int, float)) and c.price > 0
-                    and 0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price)
-    if len(prices) < 3:
-        return None
-    return prices[len(prices) // 2]
+def _in_sane_band(item, c) -> bool:
+    return (isinstance(c.price, (int, float)) and c.price > 0
+            and 0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price)
+
+
+def _equiv_price_floor(item, candidates) -> Optional[float]:
+    """Lowest price an equivalent may carry before it is almost certainly a
+    different package. Prefers size-verified peers, falls back to all priced
+    candidates, and gives no opinion when neither cohort is big enough."""
+    verified = sorted(c.price for c in candidates
+                      if _in_sane_band(item, c)
+                      and (c.criteria or {}).get("size_form_match") is True)
+    if len(verified) >= 3:
+        return EQUIV_VERIFIED_RATIO * verified[len(verified) // 2]
+    priced = sorted(c.price for c in candidates if _in_sane_band(item, c))
+    if len(priced) >= 3:
+        return EQUIV_MEDIAN_RATIO * priced[len(priced) // 2]
+    return None
 
 
 def _find_equivalents(item, candidates, shown_urls: set,
@@ -530,7 +547,7 @@ def _find_equivalents(item, candidates, shown_urls: set,
     ONLY used when no main options exist (NO SUPPLIER MATCH / REFERENCE).
     Does NOT change any existing matching logic — purely additive surfacing."""
     ordered_pack = getattr(item, "pack_qty", None)
-    peer_med = _peer_median_price(item, candidates)
+    price_floor = _equiv_price_floor(item, candidates)
     equivs = []
     seen_domains = set()
     for c in candidates:
@@ -569,7 +586,7 @@ def _find_equivalents(item, candidates, shown_urls: set,
         if "size mismatch after normalization" in (c.rejected_reason or "").lower():
             continue
         # implausibly cheap against this item's own peer sellers — see above
-        if peer_med and c.price < EQUIV_MEDIAN_RATIO * peer_med:
+        if price_floor and c.price < price_floor:
             continue
         # pack must match if both are known
         if ordered_pack and c.pack_qty and c.pack_qty != ordered_pack:
