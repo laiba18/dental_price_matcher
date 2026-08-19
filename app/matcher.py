@@ -36,7 +36,11 @@ def normalize_volume_ml(text: str) -> Optional[float]:
 def _coerce_price(c: PriceCandidate) -> None:
     """Guarantee c.price is float or None. Snippet prices and some extraction
     paths can leave a string here; comparing str to number would 500."""
-    if c.price is None or isinstance(c.price, (int, float)):
+    if c.price is None:
+        return
+    if isinstance(c.price, (int, float)):
+        # currency-converted sources land as 27.192001; a price is money, 2dp
+        c.price = round(float(c.price), 2)
         return
     import re as _re
     s = str(c.price).replace(",", "").replace("$", "").strip()

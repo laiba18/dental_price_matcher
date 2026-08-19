@@ -503,12 +503,34 @@ EQUIV_FILL = PatternFill("solid", fgColor="F3E8FF")     # light purple
 EQUIV_FONT = Font(bold=True, color="6B21A8")            # dark purple label
 
 
+# An equivalent priced far below what every OTHER seller of this item charges is
+# not a bargain — it is a component, a sample size, or a different package
+# entirely (amtouch's $122.40 "Lucitone 199" against a $502.76 peer median, for a
+# 25Lb powder that real sellers list at $1,155-$1,249). The same peer-median idea
+# already guards best-exact selection in matcher.py; equivalents were never
+# covered because they are surfaced after matching, from candidates the matcher
+# had already set aside. Client QA 2026-08-19.
+EQUIV_MEDIAN_RATIO = float(os.environ.get("EQUIV_MEDIAN_RATIO", "0.35"))
+
+
+def _peer_median_price(item, candidates) -> Optional[float]:
+    """Median price across this item's candidates, within the sane band. None
+    when too few priced candidates exist to form a meaningful baseline."""
+    prices = sorted(c.price for c in candidates
+                    if isinstance(c.price, (int, float)) and c.price > 0
+                    and 0.05 * item.unit_price <= c.price <= 3.0 * item.unit_price)
+    if len(prices) < 3:
+        return None
+    return prices[len(prices) // 2]
+
+
 def _find_equivalents(item, candidates, shown_urls: set,
                       max_results: int = 2) -> list:
     """Find cross-brand equivalent candidates cheaper than Schein.
     ONLY used when no main options exist (NO SUPPLIER MATCH / REFERENCE).
     Does NOT change any existing matching logic — purely additive surfacing."""
     ordered_pack = getattr(item, "pack_qty", None)
+    peer_med = _peer_median_price(item, candidates)
     equivs = []
     seen_domains = set()
     for c in candidates:
@@ -529,6 +551,25 @@ def _find_equivalents(item, candidates, shown_urls: set,
         if not (0.05 * item.unit_price <= c.price <= item.unit_price):
             continue
         if _is_gated(c):
+            continue
+        # A DIFFERENT BRAND is the whole point of an equivalent, but a different
+        # PRODUCT is not: Sledgehammer denture acrylic is not a Lucitone 199
+        # substitute (brand✗ AND name✗), while ConFirm biological monitoring IS a
+        # Maxitest substitute (brand✗, name✓ — client approved it). Only an
+        # explicit False disqualifies; unverified (None) candidates still pass,
+        # which keeps the tdsc Gibraltar row the client called a great match.
+        if (c.criteria or {}).get("name_match") is False:
+            continue
+        # A DETERMINISTIC size rejection is not an LLM opinion — matcher.py sets it
+        # only when both sides state a size and they disagree after normalization
+        # (usdentaldepot's 1.25oz PIP jar against an 8oz order, surfaced as $148/unit
+        # of savings). Honour it. Brand-mismatch rejections are NOT filtered here:
+        # those are the whole point of an equivalent, and the client approved one
+        # (ConFirm for Maxitest, rejected on brand, score 69).
+        if "size mismatch after normalization" in (c.rejected_reason or "").lower():
+            continue
+        # implausibly cheap against this item's own peer sellers — see above
+        if peer_med and c.price < EQUIV_MEDIAN_RATIO * peer_med:
             continue
         # pack must match if both are known
         if ordered_pack and c.pack_qty and c.pack_qty != ordered_pack:
