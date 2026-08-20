@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS mpn_store (
     page_mpn TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Learned ordered SIZE per SKU, for the items whose Schein description omits it.
+-- Mirrors mpn_store: a 'manual'/'seed' row is a discovery hint only; only
+-- page-consensus across independent verified exacts reaches 'verified', which is
+-- what makes it safe to REJECT a conflicting listing.
+CREATE TABLE IF NOT EXISTS sku_size_store (
+    schein_sku TEXT PRIMARY KEY,
+    size_g REAL,
+    source TEXT,
+    status TEXT,
+    votes INTEGER,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 -- Stage 3 (order generation) — schema reserved, unused in Stage 1+2
 CREATE TABLE IF NOT EXISTS order_history (
     id INTEGER PRIMARY KEY,
@@ -472,6 +484,51 @@ def get_mpn_store(conn) -> dict:
     except Exception:
         pass
     return out
+
+
+def get_size_store(conn) -> dict:
+    """Return {schein_sku: {size_g, source, status, votes}}."""
+    out = {}
+    try:
+        for sku, g, src, st, v in conn.execute(
+                "SELECT schein_sku, size_g, source, status, votes FROM sku_size_store"):
+            out[sku] = {"size_g": g, "source": src, "status": st, "votes": v}
+    except Exception:
+        pass
+    return out
+
+
+def upsert_size(conn, schein_sku, size_g, source="page-consensus",
+                status="seed", votes=1) -> None:
+    if not schein_sku or not size_g:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO sku_size_store(schein_sku, size_g, source, "
+        "status, votes, updated_at) VALUES (?,?,?,?,?,datetime('now'))",
+        (schein_sku, float(size_g), source, status, int(votes)))
+    conn.commit()
+
+
+def upsert_size_now(schein_sku, size_g, source="page-consensus",
+                    status="verified", votes=1) -> None:
+    """Thread-safe immediate upsert (own connection), mirroring upsert_mpn_now —
+    sizes are learned inside the per-item worker threads."""
+    if not schein_sku or not size_g:
+        return
+    try:
+        with _scrape_lock:
+            c = sqlite3.connect(_scrape_db_file(), timeout=10)
+            try:
+                c.execute(
+                    "INSERT OR REPLACE INTO sku_size_store(schein_sku, size_g, "
+                    "source, status, votes, updated_at) "
+                    "VALUES (?,?,?,?,?,datetime('now'))",
+                    (schein_sku, float(size_g), source, status, int(votes)))
+                c.commit()
+            finally:
+                c.close()
+    except Exception:
+        pass
 
 
 def upsert_mpn(conn, schein_sku, mpn, manufacturer=None, source="manual",

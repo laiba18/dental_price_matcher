@@ -23,6 +23,14 @@ class OrderLineItem(BaseModel):
     search_query: Optional[str] = None
     generic_query: Optional[str] = None   # brand-stripped query for house-brand items
     mpn_query: Optional[str] = None       # MPN-based precision query
+    size_g: Optional[float] = None        # ordered mass in grams, from the learned
+                                          # per-SKU size store when Schein's own
+                                          # description omits it (Luxatemp "Refill
+                                          # A2 Ea" is really a 76 gm cartridge)
+    size_g_verified: bool = False         # confirmed by page-consensus across two
+                                          # independent verified exacts → safe to
+                                          # REJECT a conflicting size; an unverified
+                                          # seed is a discovery hint only
 
 
 class ParsedOrder(BaseModel):

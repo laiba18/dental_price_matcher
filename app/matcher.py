@@ -24,6 +24,30 @@ VOLUME_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ml|cc|oz|fl\s?oz|l|liter|gallon|gal)
 _ML = {"ml": 1.0, "cc": 1.0, "oz": 29.5735, "fl oz": 29.5735, "floz": 29.5735,
        "l": 1000.0, "liter": 1000.0, "gallon": 3785.41, "gal": 3785.41}
 
+# MASS is deliberately a SEPARATE scale from volume: merged into _ML, a 76 g
+# cartridge would read as "equal" to a 76 ml bottle. Schein already states mass
+# in many descriptions ("…Plaster Reg Set 47.5Lb", "Lucitone 199 Powder 25Lb")
+# and it was being discarded — the size check only understood liquids, so the
+# 15 gm Luxatemp syringe passed as an exact match for a 76 gm cartridge and
+# headlined $256 of savings the client had to catch by hand.
+# Two traps, both hit in real pages:
+#  1. Dental PART NUMBERS. A diamond bur coded "833G-023", "841G-012" or listed
+#     as "DS4 Burs, 833G 016 FG" uses G for GRIT. Bare g/gr therefore REQUIRE a
+#     space from the number ("445 Gr" ok, "833G" not); the unambiguous units
+#     (gm/grams/lb/kg) may sit flush against it ("76gm").
+#  2. SHIPPING weight. "Additional information Weight 0.05 lbs" is a real mass in
+#     the wrong sense — it describes the parcel, not the product — so a match
+#     introduced by weight/shipping wording is skipped.
+_MASS_UNAMBIGUOUS = r"gm|gms|grams?|lbs?|pounds?|kgs?"
+MASS_RE = re.compile(
+    rf"(\d+(?:\.\d+)?)\s*({_MASS_UNAMBIGUOUS})\b(?![-\d.])"
+    rf"|(\d+(?:\.\d+)?)\s+(gr|g)\b(?![-\d.])", re.I)
+_MASS_SKIP_CONTEXT = re.compile(
+    r"(ship\w*|weigh\w*|wt\.?|dimension\w*|freight|gross|net wt)\W{0,3}$", re.I)
+_G = {"gm": 1.0, "gms": 1.0, "g": 1.0, "gr": 1.0, "gram": 1.0, "grams": 1.0,
+      "lb": 453.592, "lbs": 453.592, "pound": 453.592, "pounds": 453.592,
+      "kg": 1000.0, "kgs": 1000.0}
+
 
 def normalize_volume_ml(text: str) -> Optional[float]:
     m = VOLUME_RE.search(text or "")
@@ -31,6 +55,30 @@ def normalize_volume_ml(text: str) -> Optional[float]:
         return None
     unit = re.sub(r"\s+", " ", m.group(2).lower())
     return float(m.group(1)) * _ML.get(unit, 1.0)
+
+
+def _iter_masses(text: str):
+    """Masses in grams, skipping parcel/shipping weights (see MASS_RE notes)."""
+    s = text or ""
+    for m in MASS_RE.finditer(s):
+        num, unit = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        unit = (unit or "").lower()
+        if unit not in _G:
+            continue
+        if _MASS_SKIP_CONTEXT.search(s[max(0, m.start() - 28):m.start()]):
+            continue
+        g = round(float(num) * _G[unit], 3)
+        if g > 0:                      # "0 lbs" placeholders carry no information
+            yield g
+
+
+def normalize_mass_g(text: str) -> Optional[float]:
+    return next(_iter_masses(text), None)
+
+
+def all_masses_g(text: str) -> list:
+    """Every mass mentioned, for consensus voting when learning a SKU's size."""
+    return list(_iter_masses(text))
 
 
 def _coerce_price(c: PriceCandidate) -> None:
@@ -144,11 +192,26 @@ def pack_from_page(c: PriceCandidate) -> Optional[int]:
 
 
 def volume_compatible(item: OrderLineItem, c: PriceCandidate) -> Optional[bool]:
+    """Size agreement on whichever scale BOTH sides actually state. Volume and
+    mass are compared independently and never against each other; when only one
+    side states a size, or the two use different scales, the answer is None (no
+    opinion) exactly as before."""
+    page = (c.scraped_product_name or "") + " " + (c.title or "")
     a = normalize_volume_ml(item.description)
-    b = normalize_volume_ml((c.scraped_product_name or "") + " " + (c.title or ""))
-    if a is None or b is None:
-        return None
-    return abs(a - b) / a <= 0.02
+    b = normalize_volume_ml(page)
+    if a is not None and b is not None:
+        return abs(a - b) / a <= 0.02
+    # ordered mass may come from the description or, when Schein omits it, from
+    # the learned per-SKU size store (see apply_learned_sizes)
+    am = normalize_mass_g(item.description)
+    if am is None and getattr(item, "size_g_verified", False):
+        # a learned size may only REJECT once page-consensus confirmed it; an
+        # unverified seed stays a discovery hint, as with mpn_verified
+        am = getattr(item, "size_g", None)
+    bm = normalize_mass_g(page)
+    if am is not None and bm is not None and am > 0:
+        return abs(am - bm) / am <= 0.02
+    return None
 
 
 # Deterministic variant backstop for the weak free-tier extractor: catch
@@ -1283,6 +1346,14 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
         break
     if exacts:
         result.best_exact = exacts[0]
+    # Learn this SKU's real size from whatever the verified exacts agree on, so
+    # a future run can reject the wrong-size listing deterministically.
+    try:
+        learn_size_from_exacts(item, result.candidates)
+    except Exception:
+        # never debug-level: a silent failure here looks identical to "this SKU
+        # had nothing to learn", which hid an AttributeError across two full runs
+        log.warning("SKU %s — size learning FAILED", sku, exc_info=True)
     return result
 
 
@@ -1343,6 +1414,87 @@ def _page_declares(c, mpn) -> bool:
         getattr(c, "scraped_product_name", None), getattr(c, "title", None),
         getattr(c, "url", None), (getattr(c, "scraped_markdown", None) or "")[:4000]) if p))
     return n in hay
+
+
+SIZE_LEARN_MIN_SCORE = int(os.environ.get("SIZE_LEARN_MIN_SCORE", "90"))
+# how much page body to scan for the mass; the size sits in the description
+# block near the top, and scanning further only adds unrelated shipping weights
+SIZE_LEARN_SCAN_CHARS = int(os.environ.get("SIZE_LEARN_SCAN_CHARS", "4000"))
+
+
+def apply_learned_sizes(conn, items) -> int:
+    """Set item.size_g from the learned store for the items whose own Schein
+    description states no mass. Returns how many were enriched."""
+    from . import db
+    store = db.get_size_store(conn) if conn else {}
+    if not store:
+        return 0
+    n = 0
+    for it in items:
+        if normalize_mass_g(it.description) is not None:
+            continue                      # Schein stated it — nothing to add
+        rec = store.get(it.schein_sku)
+        if not rec or not rec.get("size_g"):
+            continue
+        it.size_g = rec["size_g"]
+        it.size_g_verified = (rec.get("status") == "verified")
+        n += 1
+        log.info("SKU %s — learned size applied: %.1fg (%s)", it.schein_sku,
+                 it.size_g, rec.get("status"))
+    return n
+
+
+def learn_size_from_exacts(item, candidates) -> None:
+    """Record what size this SKU actually is, for the items Schein describes
+    without one ("Luxatemp Fluorescence Refill A2 Ea" is a 76 gm cartridge).
+
+    Votes across HIGH-CONFIDENCE exact matches only, because a wrong learned
+    size is worse than none — it would reject the correct listing on every
+    future run. Two independent domains agreeing promotes the value to
+    'verified', which is the only status volume_compatible will reject on."""
+    if normalize_mass_g(item.description) is not None:
+        return                                   # already stated in the order
+    by_mass: dict = {}
+    for c in candidates:
+        if c.match_type != "exact" or getattr(c, "marketplace", None):
+            continue
+        if (c.confidence or 0) < SIZE_LEARN_MIN_SCORE:
+            continue
+        if not _effective_exact(item, c):
+            continue
+        # the mass is usually in the PAGE BODY, not the title or slug —
+        # crazydentalprices' Luxatemp URL is just "Luxatemp-Fluorescence-110586"
+        # while "76 gm Cartridge" sits in the description block
+        text = " ".join(x for x in (c.scraped_product_name, c.title, c.url,
+                                    c.notes,
+                                    (c.scraped_markdown or "")[:SIZE_LEARN_SCAN_CHARS]) if x)
+        for g in set(all_masses_g(text)):
+            by_mass.setdefault(g, set()).add(_domain_of(c.url))
+    if not by_mass:
+        return
+    # most-corroborated mass wins; ties break toward the larger (a page naming a
+    # 76 gm cartridge often also names its 15 gm tips)
+    best = max(by_mass.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    mass, domains = best[0], best[1]
+    if not mass or mass <= 0:
+        return
+    status = "verified" if len(domains) >= 2 else "seed"
+    try:
+        from . import db
+        db.upsert_size_now(item.schein_sku, mass, source="page-consensus",
+                           status=status, votes=len(domains))
+        log.info("SKU %s — learned size %.1fg from %d domain(s) → %s",
+                 item.schein_sku, mass, len(domains), status)
+    except Exception:
+        log.debug("size learn skipped for %s", item.schein_sku)
+
+
+def _domain_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return urlparse(str(url or "")).netloc.lower().removeprefix("www.")
+    except Exception:
+        return ""
 
 
 def seed_and_apply_mpn(conn, items, config_dir: Path) -> int:

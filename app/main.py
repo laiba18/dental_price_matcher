@@ -94,6 +94,9 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
         jobs.emit("step_start", step="mpn", label="MPN lookup")
         try:
             nmpn = matcher.seed_and_apply_mpn(conn, order.items, CONFIG_DIR)
+            nsz = matcher.apply_learned_sizes(conn, order.items)
+            if nsz:
+                log.info("Size store — applied %d learned size(s)", nsz)
             if nmpn:
                 log.info("MPN store — applied %d item(s)", nmpn)
             jobs.emit("step_complete", step="mpn", enriched=nmpn or 0,
