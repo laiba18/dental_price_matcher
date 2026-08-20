@@ -949,13 +949,52 @@ def _domain(url: str) -> str:
         return ""
 
 
-def canonical_url(url: str) -> str:
-    """Strip ad/tracking parameters so paid-ad clickthrough URLs dedupe and
-    scrape as their real product page."""
+# Multi-region storefronts that serve the SAME catalogue under a
+# /<country>/<lang>/ path prefix. Google keeps returning the Canadian variant
+# (frontierdental.com/ca/en/…, /ca/pan/…), whose prices are CAD — silently
+# reported as USD in a dollar-denominated savings column, which is worse than
+# missing the supplier entirely. seed_urls.txt already pins the /us/en/ form for
+# this domain, so the US catalogue demonstrably exists. Client QA 2026-08-19.
+REGION_PATH_DOMAINS = ("frontierdental.com",)
+REGION_PATH_RE = re.compile(r"^/([a-z]{2})/([a-z]{2,4})/", re.I)
+# Same problem, subdomain-shaped: intl.usdentaldepot.com is the export storefront.
+INTL_SUBDOMAIN_RE = re.compile(r"^intl\.", re.I)
+
+
+def force_us_storefront(url: str) -> str:
+    """Rewrite a non-US regional storefront URL to its US equivalent.
+
+    Only fires on domains known to mirror one catalogue per region, so a product
+    slug that merely starts with two letters is never touched. If the US page
+    turns out not to exist the scrape simply fails and the candidate drops —
+    the same outcome as never finding it, and strictly better than pricing a
+    CAD page as USD."""
     if not url:
         return url
     try:
         p = urlparse(url)
+        host = p.netloc.lower().removeprefix("www.")
+        if INTL_SUBDOMAIN_RE.match(host):
+            return urlunparse(p._replace(netloc=INTL_SUBDOMAIN_RE.sub("", p.netloc)))
+        if not any(host == d or host.endswith("." + d) for d in REGION_PATH_DOMAINS):
+            return url
+        m = REGION_PATH_RE.match(p.path or "")
+        if not m or m.group(1).lower() == "us":
+            return url
+        return urlunparse(p._replace(
+            path=REGION_PATH_RE.sub("/us/en/", p.path, count=1)))
+    except Exception:
+        return url
+
+
+def canonical_url(url: str) -> str:
+    """Strip ad/tracking parameters so paid-ad clickthrough URLs dedupe and
+    scrape as their real product page, and normalise non-US regional
+    storefronts to their US catalogue so prices are actually in USD."""
+    if not url:
+        return url
+    try:
+        p = urlparse(force_us_storefront(url))
         q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
              if k.lower() not in TRACKING_KEYS
              and not k.lower().startswith(TRACKING_PREFIXES)]
@@ -1579,6 +1618,11 @@ def _firecrawl_supplier_gap_sweep(item: OrderLineItem, cands: list, seen: set) -
     # supplier batch gets its own ranked slots — far better coverage for a few
     # extra credits. Tunable: GAP_SWEEP_LIMIT (per-batch results), GAP_SWEEP_BATCH
     # (domains per batch). Each batch search ≈ ceil(limit/10)*2 credits.
+    # Batch size was trialled at 10 (7 batches/item instead of 3) to give each
+    # supplier ~4 ranked slots instead of ~1.6. Measured on OR202608131708402660:
+    # 70 -> 122 Firecrawl credits (+74%) and the target supplier still did not
+    # surface, so the default stays at 25. Lower GAP_SWEEP_BATCH to trade credits
+    # for recall on a specific run.
     gap_limit = int(os.environ.get("GAP_SWEEP_LIMIT", "40"))
     gap_batch = int(os.environ.get("GAP_SWEEP_BATCH", "25"))
     n_batches = -(-len(gap) // gap_batch)
