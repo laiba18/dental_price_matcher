@@ -422,8 +422,14 @@ def _aggregator_domain(url: str) -> Optional[str]:
 # the SHORT aggregator cache TTL so reported prices stay current, but they do
 # NOT go through the aggregator seller-table parser (normal single-price pages).
 # Client-tunable via FRESH_PRICE_DOMAINS (comma-separated).
+# frontierdental.com is here for a different reason: its cached Firecrawl
+# snapshot comes back at 54k chars of promo/nav with the product price beyond any
+# sane cap, while a FRESH render of the same URL is 28k with the price at ~24k.
+# Served stale, the model reads the banner prices ("Saliva Ejector", "$0.45
+# Disposable gown") and rejects the page as a different product.
 FRESH_PRICE_DOMAINS = {d.strip().lower() for d in os.environ.get(
-    "FRESH_PRICE_DOMAINS", "crazydentalprices.com").split(",") if d.strip()}
+    "FRESH_PRICE_DOMAINS",
+    "crazydentalprices.com,frontierdental.com").split(",") if d.strip()}
 
 
 def _fresh_price_domain(url: str) -> bool:
@@ -2743,7 +2749,7 @@ def free_fetch_structured(c: PriceCandidate, tag: str = "") -> bool:
     if c.structured_name:
         markers += _sname_marker(c.structured_name) + "\n"
     cache_text = markers + main
-    c.scraped_markdown = main[:int(os.environ.get("SCRAPE_MD_CAP", "10000"))]
+    c.scraped_markdown = main[:int(os.environ.get("SCRAPE_MD_CAP", "30000"))]
     if not matrix_hit:
         c.notes = ((c.notes + " · ") if c.notes else "") + (
             "price $%.2f via free HTTP fetch (page structured data — 0 Firecrawl credits)" % sp)
@@ -2817,7 +2823,7 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
                 c.rejected_reason = "category/list page (site listing controls detected) — never a product match"
                 c.price = None
                 return c
-            c.scraped_markdown = full_main[:int(os.environ.get("SCRAPE_MD_CAP", "10000"))]
+            c.scraped_markdown = full_main[:int(os.environ.get("SCRAPE_MD_CAP", "30000"))]
             if cached_matrix:
                 _apply_variant_matrix(c, cached_matrix, tag)  # MPN→variant price (amtouch)
             if cached_sprice and not getattr(c, "mpn_confirmed", False):
@@ -3044,13 +3050,18 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
     # stale snippet price survived. Huge pages (380k-char category listings) are
     # still rejected outright by OVERSIZE below — that guard, not this cap, is
     # what keeps non-product pages out of the batch.
+    # 30000 (was 10000): frontierdental's PIP page carries its $152.15 at offset
+    # 23938 of 28270 — the client found that price by hand and the pipeline could
+    # never see it. Raising this does NOT inflate the LLM prompt: ai._slice still
+    # windows to EXTRACT_PER_PAGE_CHARS and stitches head + price block, so the
+    # cap only governs how DEEP that window is allowed to reach.
     # 10000 (was 6000): multi-product pages (safco's Fuji II LC lists the applier
     # + every shade on ONE url) push the ORDERED variant's row past 6000 — e.g. the
     # A3/48-box row + its $364.99 sit at ~6500-7700 while the $140.49 applier sits
     # at ~1955, so a 6000 cap fed the model ONLY the cheap applier. The LLM prompt
     # is unaffected (ai._slice still windows to EXTRACT_PER_PAGE_CHARS); this cap
     # only governs how much markdown the variant-anchor can reach.
-    MD_CAP = int(os.environ.get("SCRAPE_MD_CAP", "10000"))
+    MD_CAP = int(os.environ.get("SCRAPE_MD_CAP", "30000"))
     OVERSIZE = int(os.environ.get("SCRAPE_OVERSIZE_REJECT", "150000"))
     # Marketplace PDPs are enormous (an Amazon /dp/ page easily exceeds 150k chars
     # of markdown) but their URL pattern already guarantees a product page — the
