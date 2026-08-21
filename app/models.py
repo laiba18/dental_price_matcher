@@ -23,6 +23,10 @@ class OrderLineItem(BaseModel):
     search_query: Optional[str] = None
     generic_query: Optional[str] = None   # brand-stripped query for house-brand items
     mpn_query: Optional[str] = None       # MPN-based precision query
+    category: str = "both"                # dental | medical | both — decides whether
+                                          # the sweep prioritises medical suppliers.
+                                          # Defaults to 'both' so an unclassified
+                                          # item searches everywhere, never less.
     size_g: Optional[float] = None        # ordered mass in grams, from the learned
                                           # per-SKU size store when Schein's own
                                           # description omits it (Luxatemp "Refill

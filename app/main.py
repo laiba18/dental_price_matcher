@@ -87,6 +87,9 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
         try:
             ai.parse_items_batch(order.items)
             log.info("Groq parse complete — %d item(s)", len(order.items))
+            for _it in order.items:
+                log.info("SKU %s — category=%s | %s", _it.schein_sku,
+                         getattr(_it, "category", "?"), _it.description[:52])
             jobs.emit("step_complete", step="ai", items=len(order.items),
                       message=f"AI enriched {len(order.items)} products")
         except Exception:

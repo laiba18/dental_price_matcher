@@ -641,6 +641,14 @@ def _agg_debug_dump(url, dom, section, markdown, options, backorder,
         log.warning("AGG_DEBUG dump failed for %s: %s", (url or "")[:60], e)
 
 
+# Floor for the UNBADGED seller-table fallback, as a fraction of the page's own
+# row median. A single-row page is trivially its own median, so this only ever
+# bites where several sellers disagree — measured over all 57 cached net32 pages,
+# the one wrong result sat at 0.31 of its row median while every good one was at
+# or near 1.0. Set well below that so a genuine discount still passes.
+AGG_ROW_MEDIAN_MIN = float(os.environ.get("AGG_ROW_MEDIAN_MIN", "0.55"))
+
+
 def parse_aggregator_price(url: str, markdown: str) -> Optional[dict]:
     """Pick the lowest AVAILABLE seller's landed total (price + shipping) from a
     Net32 / SupplyClinic multi-seller table. Returns
@@ -719,12 +727,34 @@ def parse_aggregator_price(url: str, markdown: str) -> Optional[dict]:
     # No usable badge → min of the table, but drop rows that fall below the
     # plausibility floor (sub-unit / sidebar artifacts like $6.01 under a $14.94
     # buy box) when at least one plausible row remains.
-    if result is None and headline:
-        plausible_rows = sorted(t for t, _ in options if _plausible(t))
-        if plausible_rows and min_total < 0.30 * headline:
-            result = {"price": plausible_rows[0], "lowest_badge_matched": False,
-                      "n_rows": len(options), "badge_price": badge_price,
-                      "backorder_options": backorder}
+    # UNBADGED FALLBACK — the weakest path. It used to take the lowest row that
+    # cleared 30% of the headline, which let Luxatemp Fluorescence report $83.95
+    # against a $272.38 page: its badge row ($79.99) failed the floor, so this
+    # branch fired and picked the next one up, while ELEVEN sellers sat at
+    # $253-296. The report headlined a third of the real price.
+    #
+    # Calibrate against the page's OWN rows instead of the headline. When most
+    # sellers agree and a couple sit far below them, the low pair are not
+    # bargains — they are a different product, a partial listing, or a sidebar
+    # artifact. This is self-calibrating per page and does not assume the
+    # headline parsed correctly (some pages quote "$X/ea" for a multi-pack, so
+    # legitimate row totals run ABOVE it — those must not be rejected).
+    if result is None:
+        rows_sorted = sorted(t for t, _ in options)
+        med = rows_sorted[len(rows_sorted) // 2]
+        credible = [t for t in rows_sorted if t >= AGG_ROW_MEDIAN_MIN * med]
+        if not credible:
+            log.info("aggregator %s — no seller row within %.0f%% of the row "
+                     "median $%.2f; deferring to the LLM",
+                     _domain(url), AGG_ROW_MEDIAN_MIN * 100, med)
+            return None
+        if credible[0] != min_total:
+            log.info("aggregator %s — dropped %d row(s) far below the $%.2f row "
+                     "median (min was $%.2f, using $%.2f)", _domain(url),
+                     len(rows_sorted) - len(credible), med, min_total, credible[0])
+        result = {"price": credible[0], "lowest_badge_matched": False,
+                  "n_rows": len(options), "badge_price": badge_price,
+                  "backorder_options": backorder}
     if result is None:
         result = {"price": min_total, "lowest_badge_matched": False,
                   "n_rows": len(options), "badge_price": badge_price,
@@ -834,6 +864,46 @@ def load_supplier_sites() -> List[str]:
 
 
 SUPPLIER_SITES = load_supplier_sites()
+
+
+def load_medical_sites() -> set:
+    """Domains tagged medical_supplier in Admin → Supplier Sources. They are
+    searched for EVERY item (they stay in supplier_sites.txt); the tag only
+    decides which items push them to the front of the gap sweep."""
+    try:
+        import json
+        f = CONFIG_DIR / "supplier_sources.json"
+        if not f.exists():
+            return set()
+        return {s["domain"].lower() for s in json.loads(f.read_text())
+                if s.get("type") == "medical_supplier" and s.get("enabled", True)}
+    except Exception:
+        return set()
+
+
+MEDICAL_SITES = load_medical_sites()
+
+
+def _gap_order(item, gap: list) -> list:
+    """Order the gap sweep so the suppliers most likely to carry THIS item are
+    searched first. Client QA: "you need to also look at products that are
+    clearly also medical products, like sterile water in bags. The lowest price
+    in the market is on a medical website. They use a lot more of that than we
+    do." Nothing is removed — a batched Firecrawl /search returns only its
+    best-ranked results, so ORDER decides who gets a slot."""
+    if not MEDICAL_SITES:
+        return gap
+    cat = (getattr(item, "category", None) or "both").lower()
+    if cat == "dental":
+        # dental-only item: medical shops go last rather than being dropped,
+        # so a surprise listing is still reachable
+        return ([d for d in gap if d not in MEDICAL_SITES]
+                + [d for d in gap if d in MEDICAL_SITES])
+    med = [d for d in gap if d in MEDICAL_SITES]
+    if med:
+        log.info("SKU %s — category=%s: prioritising %d medical supplier(s) in "
+                 "the gap sweep", item.schein_sku, cat, len(med))
+    return med + [d for d in gap if d not in MEDICAL_SITES]
 
 
 def load_seed_urls() -> dict:
@@ -1658,7 +1728,7 @@ def _firecrawl_supplier_gap_sweep(item: OrderLineItem, cands: list, seen: set) -
         for s in SUPPLIER_SITES:
             if d == s or d.endswith("." + s) or s.endswith(d):
                 found_domains.add(s)
-    gap = [s for s in SUPPLIER_SITES if s not in found_domains]
+    gap = _gap_order(item, [s for s in SUPPLIER_SITES if s not in found_domains])
     if not gap:
         log.info("SKU %s — supplier gap-sweep skipped: all %d trusted suppliers "
                  "already covered by organic results", item.schein_sku, len(SUPPLIER_SITES))
