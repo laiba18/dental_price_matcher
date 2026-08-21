@@ -175,3 +175,9 @@
 1078836 | https://chasedentalsupply.com/premier-dental-neotray-anterior-30-bx-premier/
 1078836 | https://ddsdentalsupplies.com/premier-neotray-impression-tray-anterior-30-bx/
 1078836 | https://allstardentalsupply.com/products/neotray-anterior-30-bx-premier
+
+# 2424179 Pressure Indicator Paste 8oz/Jr — client QA 2026-08-19: "Frontier
+# Dental price is $152". Frontier's US catalogue lists it at $152.15 (Mfg Code
+# 6120400, "Jar without Remover, 8 oz, 1/Pk") but SerpAPI never surfaced the page
+# and the Firecrawl gap-sweep could not rank it, so discovery missed it entirely.
+2424179 | https://www.frontierdental.com/us/en/product/pip-pressure-indicator-paste-jar-without-remover-8-oz-1-pk-35213

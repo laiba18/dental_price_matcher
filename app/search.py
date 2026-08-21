@@ -422,8 +422,14 @@ def _aggregator_domain(url: str) -> Optional[str]:
 # the SHORT aggregator cache TTL so reported prices stay current, but they do
 # NOT go through the aggregator seller-table parser (normal single-price pages).
 # Client-tunable via FRESH_PRICE_DOMAINS (comma-separated).
+# frontierdental.com is here for a different reason: its cached Firecrawl
+# snapshot comes back at 54k chars of promo/nav with the product price beyond any
+# sane cap, while a FRESH render of the same URL is 28k with the price at ~24k.
+# Served stale, the model reads the banner prices ("Saliva Ejector", "$0.45
+# Disposable gown") and rejects the page as a different product.
 FRESH_PRICE_DOMAINS = {d.strip().lower() for d in os.environ.get(
-    "FRESH_PRICE_DOMAINS", "crazydentalprices.com").split(",") if d.strip()}
+    "FRESH_PRICE_DOMAINS",
+    "crazydentalprices.com,frontierdental.com").split(",") if d.strip()}
 
 
 def _fresh_price_domain(url: str) -> bool:
@@ -635,6 +641,14 @@ def _agg_debug_dump(url, dom, section, markdown, options, backorder,
         log.warning("AGG_DEBUG dump failed for %s: %s", (url or "")[:60], e)
 
 
+# Floor for the UNBADGED seller-table fallback, as a fraction of the page's own
+# row median. A single-row page is trivially its own median, so this only ever
+# bites where several sellers disagree — measured over all 57 cached net32 pages,
+# the one wrong result sat at 0.31 of its row median while every good one was at
+# or near 1.0. Set well below that so a genuine discount still passes.
+AGG_ROW_MEDIAN_MIN = float(os.environ.get("AGG_ROW_MEDIAN_MIN", "0.55"))
+
+
 def parse_aggregator_price(url: str, markdown: str) -> Optional[dict]:
     """Pick the lowest AVAILABLE seller's landed total (price + shipping) from a
     Net32 / SupplyClinic multi-seller table. Returns
@@ -713,12 +727,34 @@ def parse_aggregator_price(url: str, markdown: str) -> Optional[dict]:
     # No usable badge → min of the table, but drop rows that fall below the
     # plausibility floor (sub-unit / sidebar artifacts like $6.01 under a $14.94
     # buy box) when at least one plausible row remains.
-    if result is None and headline:
-        plausible_rows = sorted(t for t, _ in options if _plausible(t))
-        if plausible_rows and min_total < 0.30 * headline:
-            result = {"price": plausible_rows[0], "lowest_badge_matched": False,
-                      "n_rows": len(options), "badge_price": badge_price,
-                      "backorder_options": backorder}
+    # UNBADGED FALLBACK — the weakest path. It used to take the lowest row that
+    # cleared 30% of the headline, which let Luxatemp Fluorescence report $83.95
+    # against a $272.38 page: its badge row ($79.99) failed the floor, so this
+    # branch fired and picked the next one up, while ELEVEN sellers sat at
+    # $253-296. The report headlined a third of the real price.
+    #
+    # Calibrate against the page's OWN rows instead of the headline. When most
+    # sellers agree and a couple sit far below them, the low pair are not
+    # bargains — they are a different product, a partial listing, or a sidebar
+    # artifact. This is self-calibrating per page and does not assume the
+    # headline parsed correctly (some pages quote "$X/ea" for a multi-pack, so
+    # legitimate row totals run ABOVE it — those must not be rejected).
+    if result is None:
+        rows_sorted = sorted(t for t, _ in options)
+        med = rows_sorted[len(rows_sorted) // 2]
+        credible = [t for t in rows_sorted if t >= AGG_ROW_MEDIAN_MIN * med]
+        if not credible:
+            log.info("aggregator %s — no seller row within %.0f%% of the row "
+                     "median $%.2f; deferring to the LLM",
+                     _domain(url), AGG_ROW_MEDIAN_MIN * 100, med)
+            return None
+        if credible[0] != min_total:
+            log.info("aggregator %s — dropped %d row(s) far below the $%.2f row "
+                     "median (min was $%.2f, using $%.2f)", _domain(url),
+                     len(rows_sorted) - len(credible), med, min_total, credible[0])
+        result = {"price": credible[0], "lowest_badge_matched": False,
+                  "n_rows": len(options), "badge_price": badge_price,
+                  "backorder_options": backorder}
     if result is None:
         result = {"price": min_total, "lowest_badge_matched": False,
                   "n_rows": len(options), "badge_price": badge_price,
@@ -830,6 +866,46 @@ def load_supplier_sites() -> List[str]:
 SUPPLIER_SITES = load_supplier_sites()
 
 
+def load_medical_sites() -> set:
+    """Domains tagged medical_supplier in Admin → Supplier Sources. They are
+    searched for EVERY item (they stay in supplier_sites.txt); the tag only
+    decides which items push them to the front of the gap sweep."""
+    try:
+        import json
+        f = CONFIG_DIR / "supplier_sources.json"
+        if not f.exists():
+            return set()
+        return {s["domain"].lower() for s in json.loads(f.read_text())
+                if s.get("type") == "medical_supplier" and s.get("enabled", True)}
+    except Exception:
+        return set()
+
+
+MEDICAL_SITES = load_medical_sites()
+
+
+def _gap_order(item, gap: list) -> list:
+    """Order the gap sweep so the suppliers most likely to carry THIS item are
+    searched first. Client QA: "you need to also look at products that are
+    clearly also medical products, like sterile water in bags. The lowest price
+    in the market is on a medical website. They use a lot more of that than we
+    do." Nothing is removed — a batched Firecrawl /search returns only its
+    best-ranked results, so ORDER decides who gets a slot."""
+    if not MEDICAL_SITES:
+        return gap
+    cat = (getattr(item, "category", None) or "both").lower()
+    if cat == "dental":
+        # dental-only item: medical shops go last rather than being dropped,
+        # so a surprise listing is still reachable
+        return ([d for d in gap if d not in MEDICAL_SITES]
+                + [d for d in gap if d in MEDICAL_SITES])
+    med = [d for d in gap if d in MEDICAL_SITES]
+    if med:
+        log.info("SKU %s — category=%s: prioritising %d medical supplier(s) in "
+                 "the gap sweep", item.schein_sku, cat, len(med))
+    return med + [d for d in gap if d not in MEDICAL_SITES]
+
+
 def load_seed_urls() -> dict:
     """Per-SKU 'known-good' product URLs (config/seed_urls.txt, lines 'SKU | url').
     These are injected as candidates and scraped DIRECTLY every run regardless of
@@ -852,6 +928,26 @@ def load_seed_urls() -> dict:
 
 
 SEED_URLS = load_seed_urls()
+
+# Proven-source replay (see the injection site in market_sweep). Loaded once per
+# run from the DB by load_price_memory(); capped per SKU so replay cannot run
+# away with the scrape budget.
+PRICE_MEMORY: dict = {}
+PRICE_MEMORY_MAX = int(os.environ.get("PRICE_MEMORY_MAX", "4"))
+
+
+def load_price_memory(conn) -> int:
+    """Populate PRICE_MEMORY for this run. Returns the number of SKUs covered."""
+    global PRICE_MEMORY
+    if os.environ.get("PRICE_MEMORY", "1") in ("0", "false", "False"):
+        PRICE_MEMORY = {}
+        return 0
+    try:
+        from . import db
+        PRICE_MEMORY = db.get_price_memory(conn, limit_per_sku=PRICE_MEMORY_MAX)
+    except Exception:
+        PRICE_MEMORY = {}
+    return len(PRICE_MEMORY)
 
 # Per-SKU discovery cache (loaded from DB at run start, flushed at run end).
 # Maps schein_sku -> list[url]. Skips re-discovery of repeat items.
@@ -949,13 +1045,52 @@ def _domain(url: str) -> str:
         return ""
 
 
-def canonical_url(url: str) -> str:
-    """Strip ad/tracking parameters so paid-ad clickthrough URLs dedupe and
-    scrape as their real product page."""
+# Multi-region storefronts that serve the SAME catalogue under a
+# /<country>/<lang>/ path prefix. Google keeps returning the Canadian variant
+# (frontierdental.com/ca/en/…, /ca/pan/…), whose prices are CAD — silently
+# reported as USD in a dollar-denominated savings column, which is worse than
+# missing the supplier entirely. seed_urls.txt already pins the /us/en/ form for
+# this domain, so the US catalogue demonstrably exists. Client QA 2026-08-19.
+REGION_PATH_DOMAINS = ("frontierdental.com",)
+REGION_PATH_RE = re.compile(r"^/([a-z]{2})/([a-z]{2,4})/", re.I)
+# Same problem, subdomain-shaped: intl.usdentaldepot.com is the export storefront.
+INTL_SUBDOMAIN_RE = re.compile(r"^intl\.", re.I)
+
+
+def force_us_storefront(url: str) -> str:
+    """Rewrite a non-US regional storefront URL to its US equivalent.
+
+    Only fires on domains known to mirror one catalogue per region, so a product
+    slug that merely starts with two letters is never touched. If the US page
+    turns out not to exist the scrape simply fails and the candidate drops —
+    the same outcome as never finding it, and strictly better than pricing a
+    CAD page as USD."""
     if not url:
         return url
     try:
         p = urlparse(url)
+        host = p.netloc.lower().removeprefix("www.")
+        if INTL_SUBDOMAIN_RE.match(host):
+            return urlunparse(p._replace(netloc=INTL_SUBDOMAIN_RE.sub("", p.netloc)))
+        if not any(host == d or host.endswith("." + d) for d in REGION_PATH_DOMAINS):
+            return url
+        m = REGION_PATH_RE.match(p.path or "")
+        if not m or m.group(1).lower() == "us":
+            return url
+        return urlunparse(p._replace(
+            path=REGION_PATH_RE.sub("/us/en/", p.path, count=1)))
+    except Exception:
+        return url
+
+
+def canonical_url(url: str) -> str:
+    """Strip ad/tracking parameters so paid-ad clickthrough URLs dedupe and
+    scrape as their real product page, and normalise non-US regional
+    storefronts to their US catalogue so prices are actually in USD."""
+    if not url:
+        return url
+    try:
+        p = urlparse(force_us_storefront(url))
         q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
              if k.lower() not in TRACKING_KEYS
              and not k.lower().startswith(TRACKING_PREFIXES)]
@@ -1118,6 +1253,19 @@ SERP_MIN_INTERVAL = float(os.environ.get("SERPAPI_MIN_INTERVAL", "1.2"))  # seri
 SERP_MAX_RETRIES = int(os.environ.get("SERPAPI_MAX_RETRIES", "5"))
 _serp_state = {"exhausted": False, "consecutive_failures": 0}
 SERP_FAIL_GIVEUP = int(os.environ.get("SERPAPI_GIVEUP_AFTER", "8"))  # consecutive failed calls = real wall
+# A 429 whose body says the plan is spent is a QUOTA wall, not a rate limit —
+# see the branch in _serpapi(). Matched on the message SerpAPI actually returns:
+# {"error": "Your account has run out of searches."}
+_SERP_QUOTA_RE = re.compile(
+    r"run out of searches|out of searches|exceeded your.{0,20}searches|"
+    r"account.{0,20}(exhaust|deplet)|no searches left|upgrade your plan", re.I)
+
+
+def _serp_error_text(r) -> str:
+    try:
+        return str((r.json() or {}).get("error", "") or "")
+    except Exception:
+        return (getattr(r, "text", "") or "")[:300]
 
 
 def _serp_pace():
@@ -1156,6 +1304,26 @@ def _serpapi(params: dict) -> dict:
         try:
             r = requests.get("https://serpapi.com/search.json", params=params, timeout=40)
             if r.status_code == 429:
+                # SerpAPI returns 429 for TWO different things, and they need
+                # opposite responses. A spent key answers {"error": "Your account
+                # has run out of searches."} — no amount of waiting fixes that, so
+                # rotate NOW. Counting it as one more "consecutive failure" toward
+                # the giveup threshold meant 8 failed calls x ~60s of backoff each
+                # (~8 min) before rotation, which is longer than ITEM_TIMEOUT_SEC:
+                # every item died at its wall-clock cap while two untouched keys
+                # sat unused (client run 2026-08-21, key1 at 0/250 with 499 left
+                # across keys 2-3). A genuine rate-limit 429 still backs off.
+                if _SERP_QUOTA_RE.search(_serp_error_text(r)):
+                    if _rotate_serpapi_key():
+                        log.warning("SerpAPI key %d/%d out of searches — rotated "
+                                    "immediately, retrying this call.",
+                                    _serp_key_state["idx"], len(_SERPAPI_KEYS))
+                        return _serpapi(params)
+                    with _serp_lock:
+                        _serp_state["exhausted"] = True
+                    log.error("SerpAPI: all %d key(s) out of searches.",
+                              len(_SERPAPI_KEYS))
+                    raise RuntimeError("SerpAPI quota wall hit (all keys exhausted)")
                 ra = r.headers.get("retry-after")
                 backoff = float(ra) if ra and ra.replace(".", "").isdigit() else min(4 * (attempt + 1), 30)
                 log.warning("SerpAPI 429 — backing off %ss (attempt %d/%d)",
@@ -1560,7 +1728,7 @@ def _firecrawl_supplier_gap_sweep(item: OrderLineItem, cands: list, seen: set) -
         for s in SUPPLIER_SITES:
             if d == s or d.endswith("." + s) or s.endswith(d):
                 found_domains.add(s)
-    gap = [s for s in SUPPLIER_SITES if s not in found_domains]
+    gap = _gap_order(item, [s for s in SUPPLIER_SITES if s not in found_domains])
     if not gap:
         log.info("SKU %s — supplier gap-sweep skipped: all %d trusted suppliers "
                  "already covered by organic results", item.schein_sku, len(SUPPLIER_SITES))
@@ -1579,6 +1747,11 @@ def _firecrawl_supplier_gap_sweep(item: OrderLineItem, cands: list, seen: set) -
     # supplier batch gets its own ranked slots — far better coverage for a few
     # extra credits. Tunable: GAP_SWEEP_LIMIT (per-batch results), GAP_SWEEP_BATCH
     # (domains per batch). Each batch search ≈ ceil(limit/10)*2 credits.
+    # Batch size was trialled at 10 (7 batches/item instead of 3) to give each
+    # supplier ~4 ranked slots instead of ~1.6. Measured on OR202608131708402660:
+    # 70 -> 122 Firecrawl credits (+74%) and the target supplier still did not
+    # surface, so the default stays at 25. Lower GAP_SWEEP_BATCH to trade credits
+    # for recall on a specific run.
     gap_limit = int(os.environ.get("GAP_SWEEP_LIMIT", "40"))
     gap_batch = int(os.environ.get("GAP_SWEEP_BATCH", "25"))
     n_batches = -(-len(gap) // gap_batch)
@@ -1915,7 +2088,17 @@ def market_sweep(item: OrderLineItem, max_candidates: int = 14) -> tuple[List[Pr
     # guaranteed backstop for supplier pages no search engine indexes. Added
     # before the cache-hit return below so seeds survive a warm cache, and they
     # lead the candidate list so they claim scrape slots ahead of generic results.
-    _seeds = SEED_URLS.get(item.schein_sku, [])
+    # PRICE MEMORY: the same treatment for sources this SKU has PROVEN good on a
+    # previous run. Discovery is not reproducible — re-running one order returns a
+    # different candidate set and a row the client already approved can disappear
+    # for no reason but ranking. Only the URL is replayed; the price is scraped
+    # fresh here like any other candidate, so nothing stale can reach the report.
+    _mem = list(PRICE_MEMORY.get(item.schein_sku, []))[:PRICE_MEMORY_MAX]
+    _seeds = list(SEED_URLS.get(item.schein_sku, [])) + [
+        u for u in _mem if u not in set(SEED_URLS.get(item.schein_sku, []))]
+    if _mem:
+        log.info("SKU %s — price memory: replaying %d proven source(s)",
+                 item.schein_sku, len(_mem))
     for su in _seeds:
         cu = canonical_url(su)
         if cu not in seen and not is_excluded(cu) and not DOC_EXT_RE.search(cu):
@@ -2699,7 +2882,7 @@ def free_fetch_structured(c: PriceCandidate, tag: str = "") -> bool:
     if c.structured_name:
         markers += _sname_marker(c.structured_name) + "\n"
     cache_text = markers + main
-    c.scraped_markdown = main[:int(os.environ.get("SCRAPE_MD_CAP", "10000"))]
+    c.scraped_markdown = main[:int(os.environ.get("SCRAPE_MD_CAP", "30000"))]
     if not matrix_hit:
         c.notes = ((c.notes + " · ") if c.notes else "") + (
             "price $%.2f via free HTTP fetch (page structured data — 0 Firecrawl credits)" % sp)
@@ -2773,7 +2956,7 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
                 c.rejected_reason = "category/list page (site listing controls detected) — never a product match"
                 c.price = None
                 return c
-            c.scraped_markdown = full_main[:int(os.environ.get("SCRAPE_MD_CAP", "10000"))]
+            c.scraped_markdown = full_main[:int(os.environ.get("SCRAPE_MD_CAP", "30000"))]
             if cached_matrix:
                 _apply_variant_matrix(c, cached_matrix, tag)  # MPN→variant price (amtouch)
             if cached_sprice and not getattr(c, "mpn_confirmed", False):
@@ -3000,13 +3183,18 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
     # stale snippet price survived. Huge pages (380k-char category listings) are
     # still rejected outright by OVERSIZE below — that guard, not this cap, is
     # what keeps non-product pages out of the batch.
+    # 30000 (was 10000): frontierdental's PIP page carries its $152.15 at offset
+    # 23938 of 28270 — the client found that price by hand and the pipeline could
+    # never see it. Raising this does NOT inflate the LLM prompt: ai._slice still
+    # windows to EXTRACT_PER_PAGE_CHARS and stitches head + price block, so the
+    # cap only governs how DEEP that window is allowed to reach.
     # 10000 (was 6000): multi-product pages (safco's Fuji II LC lists the applier
     # + every shade on ONE url) push the ORDERED variant's row past 6000 — e.g. the
     # A3/48-box row + its $364.99 sit at ~6500-7700 while the $140.49 applier sits
     # at ~1955, so a 6000 cap fed the model ONLY the cheap applier. The LLM prompt
     # is unaffected (ai._slice still windows to EXTRACT_PER_PAGE_CHARS); this cap
     # only governs how much markdown the variant-anchor can reach.
-    MD_CAP = int(os.environ.get("SCRAPE_MD_CAP", "10000"))
+    MD_CAP = int(os.environ.get("SCRAPE_MD_CAP", "30000"))
     OVERSIZE = int(os.environ.get("SCRAPE_OVERSIZE_REJECT", "150000"))
     # Marketplace PDPs are enormous (an Amazon /dp/ page easily exceeds 150k chars
     # of markdown) but their URL pattern already guarantees a product page — the

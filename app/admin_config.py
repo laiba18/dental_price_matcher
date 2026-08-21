@@ -26,7 +26,13 @@ API_KEY_DEFS = [
     {"id": "firecrawl", "label": "Firecrawl", "env": "FIRECRAWL_API_KEY", "hint": "firecrawl.dev"},
 ]
 
-SOURCE_TYPES = ("dental_supplier", "marketplace", "aggregator", "other")
+SOURCE_TYPES = ("dental_supplier", "medical_supplier", "marketplace",
+                "aggregator", "other")
+# Searched for every item. medical_supplier is included here so retagging a
+# domain never removes it from the sweep — the tag only decides which items
+# PRIORITISE it (client QA: "the lowest price in the market is on a medical
+# website … consider an initial logic question: Medical or Dental?").
+SEARCHABLE_TYPES = ("dental_supplier", "medical_supplier", "aggregator")
 
 DEFAULT_MARKETPLACES = [
     {"domain": "amazon.com", "enabled": True, "type": "marketplace", "priority": 900, "label": "Amazon"},
@@ -279,7 +285,7 @@ def save_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _sync_legacy_files(sources: list[dict[str, Any]]) -> None:
     dental = [
         s["domain"] for s in sources
-        if s["enabled"] and s["type"] in ("dental_supplier", "aggregator")
+        if s["enabled"] and s["type"] in SEARCHABLE_TYPES
     ]
     header = (
         "# Auto-synced from Admin → Supplier Sources. Edit via the dashboard.\n"

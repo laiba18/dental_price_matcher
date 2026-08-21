@@ -244,7 +244,7 @@
     "domain": "afteractionmedical.com",
     "label": "afteractionmedical.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 31
   },
   {
@@ -324,7 +324,7 @@
     "domain": "medexsupply.com",
     "label": "medexsupply.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 41
   },
   {
@@ -332,7 +332,7 @@
     "domain": "suprememed.com",
     "label": "suprememed.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 42
   },
   {
@@ -348,7 +348,7 @@
     "domain": "graylinemedical.com",
     "label": "graylinemedical.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 44
   },
   {
@@ -356,7 +356,7 @@
     "domain": "vitalitymedical.com",
     "label": "vitalitymedical.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 45
   },
   {
@@ -364,7 +364,7 @@
     "domain": "usamedicalsurgical.com",
     "label": "usamedicalsurgical.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 46
   },
   {
@@ -396,7 +396,7 @@
     "domain": "honestmed.com",
     "label": "honestmed.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 50
   },
   {
@@ -452,7 +452,7 @@
     "domain": "medicalproductssupply.com",
     "label": "medicalproductssupply.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 57
   },
   {
@@ -484,7 +484,7 @@
     "domain": "quantumlabs.com",
     "label": "quantumlabs.com",
     "enabled": true,
-    "type": "dental_supplier",
+    "type": "medical_supplier",
     "priority": 61
   },
   {

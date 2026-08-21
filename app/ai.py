@@ -754,6 +754,16 @@ line, same order, each with keys:
 - size_form (string|null)       # e.g. "compules", "syringe", "59 ml bottle"
 - pack_qty (int|null)           # units per pack, e.g. 20 for "20/Pk"
 - variant (string|null)         # shade/color/size variant: "A2", "Green 6.5mm", "Medium"
+- category (string)             # "dental" | "medical" | "both"
+                                # "dental"  = only a dental practice buys it
+                                #             (burs, posts, impression material, curing lights)
+                                # "medical" = general clinical/hospital supply that
+                                #             happens to be used in dentistry
+                                #             (sterile water bags, IV/irrigation
+                                #             solutions, sharps containers, gauze)
+                                # "both"    = sold widely into both channels
+                                #             (gloves, masks, disinfectant wipes)
+                                # When unsure answer "both" — it only widens the search.
 - mpn (string|null)
 - search_query (string)         # best web search query to find this exact product,
                                 # include brand, product, variant and pack size
@@ -812,6 +822,8 @@ def parse_items_batch(items: List[OrderLineItem], chunk_size: int = 12) -> List[
         it.product_name = d.get("product_name") or it.description
         it.size_form = d.get("size_form")
         it.variant = d.get("variant")
+        _cat = (d.get("category") or "").strip().lower()
+        it.category = _cat if _cat in ("dental", "medical", "both") else "both"
         it.mpn = d.get("mpn")
         if d.get("pack_qty"):
             try:
