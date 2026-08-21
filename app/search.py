@@ -1163,6 +1163,19 @@ SERP_MIN_INTERVAL = float(os.environ.get("SERPAPI_MIN_INTERVAL", "1.2"))  # seri
 SERP_MAX_RETRIES = int(os.environ.get("SERPAPI_MAX_RETRIES", "5"))
 _serp_state = {"exhausted": False, "consecutive_failures": 0}
 SERP_FAIL_GIVEUP = int(os.environ.get("SERPAPI_GIVEUP_AFTER", "8"))  # consecutive failed calls = real wall
+# A 429 whose body says the plan is spent is a QUOTA wall, not a rate limit —
+# see the branch in _serpapi(). Matched on the message SerpAPI actually returns:
+# {"error": "Your account has run out of searches."}
+_SERP_QUOTA_RE = re.compile(
+    r"run out of searches|out of searches|exceeded your.{0,20}searches|"
+    r"account.{0,20}(exhaust|deplet)|no searches left|upgrade your plan", re.I)
+
+
+def _serp_error_text(r) -> str:
+    try:
+        return str((r.json() or {}).get("error", "") or "")
+    except Exception:
+        return (getattr(r, "text", "") or "")[:300]
 
 
 def _serp_pace():
@@ -1201,6 +1214,26 @@ def _serpapi(params: dict) -> dict:
         try:
             r = requests.get("https://serpapi.com/search.json", params=params, timeout=40)
             if r.status_code == 429:
+                # SerpAPI returns 429 for TWO different things, and they need
+                # opposite responses. A spent key answers {"error": "Your account
+                # has run out of searches."} — no amount of waiting fixes that, so
+                # rotate NOW. Counting it as one more "consecutive failure" toward
+                # the giveup threshold meant 8 failed calls x ~60s of backoff each
+                # (~8 min) before rotation, which is longer than ITEM_TIMEOUT_SEC:
+                # every item died at its wall-clock cap while two untouched keys
+                # sat unused (client run 2026-08-21, key1 at 0/250 with 499 left
+                # across keys 2-3). A genuine rate-limit 429 still backs off.
+                if _SERP_QUOTA_RE.search(_serp_error_text(r)):
+                    if _rotate_serpapi_key():
+                        log.warning("SerpAPI key %d/%d out of searches — rotated "
+                                    "immediately, retrying this call.",
+                                    _serp_key_state["idx"], len(_SERPAPI_KEYS))
+                        return _serpapi(params)
+                    with _serp_lock:
+                        _serp_state["exhausted"] = True
+                    log.error("SerpAPI: all %d key(s) out of searches.",
+                              len(_SERPAPI_KEYS))
+                    raise RuntimeError("SerpAPI quota wall hit (all keys exhausted)")
                 ra = r.headers.get("retry-after")
                 backoff = float(ra) if ra and ra.replace(".", "").isdigit() else min(4 * (attempt + 1), 30)
                 log.warning("SerpAPI 429 — backing off %ss (attempt %d/%d)",

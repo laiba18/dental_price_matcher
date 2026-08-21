@@ -876,6 +876,38 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                     or _name_from_content(_md0)
                     or (c.title or None))
 
+    # UNSTATED-PACK RESCUE: when the ORDER names no pack quantity, nothing on the
+    # page can contradict it, so a pack-only rejection has no basis. Schein's
+    # "Automatrix Introductory Kit Ea" is a single kit; net32's page describes its
+    # CONTENTS as "96 assorted bands", and the model read that as a pack of 96 and
+    # rejected a candidate whose brand, name and size all matched — a row the
+    # client had approved at $668.30 against Schein's $834.81. Rescue to
+    # approximate (never straight to exact) and mark the pack UNKNOWN rather than
+    # failed, so the pack condition still reads as unverified downstream.
+    if not item.pack_qty:
+        for c in verified:
+            if c.match_type != "rejected":
+                continue
+            crit = c.criteria or {}
+            if crit.get("pack_match") is not False:
+                continue          # rejected for some other reason — leave it
+            if not (crit.get("name_match") and crit.get("size_form_match")
+                    and _brand_ok(item, c)):
+                continue          # only pack may be the failing criterion
+            if c.price is None or not price_sane(item, c):
+                continue
+            crit["pack_match"] = None
+            c.criteria = crit
+            c.match_type = "approximate"
+            c.rejected_reason = None
+            c.notes = ((c.notes + " · ") if c.notes else "") + (
+                "PACK NOT COMPARABLE — the order states no pack quantity, so the "
+                "page's stated count cannot conflict with it; brand, product and "
+                "size all confirmed. VERIFY the packaging before ordering")
+            log.info("SKU %s — %s rescued from pack-only rejection (order states "
+                     "no pack qty; page said %s)", sku, c.source_site,
+                     c.pack_qty if c.pack_qty else "a count")
+
     # deterministic demotions run AFTER the combined call (price/pack populated).
     # These OVERRIDE the AI verdict: a price-insane or volume-mismatched candidate
     # is rejected even if the model called it exact.
