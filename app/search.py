@@ -859,6 +859,26 @@ def load_seed_urls() -> dict:
 
 SEED_URLS = load_seed_urls()
 
+# Proven-source replay (see the injection site in market_sweep). Loaded once per
+# run from the DB by load_price_memory(); capped per SKU so replay cannot run
+# away with the scrape budget.
+PRICE_MEMORY: dict = {}
+PRICE_MEMORY_MAX = int(os.environ.get("PRICE_MEMORY_MAX", "4"))
+
+
+def load_price_memory(conn) -> int:
+    """Populate PRICE_MEMORY for this run. Returns the number of SKUs covered."""
+    global PRICE_MEMORY
+    if os.environ.get("PRICE_MEMORY", "1") in ("0", "false", "False"):
+        PRICE_MEMORY = {}
+        return 0
+    try:
+        from . import db
+        PRICE_MEMORY = db.get_price_memory(conn, limit_per_sku=PRICE_MEMORY_MAX)
+    except Exception:
+        PRICE_MEMORY = {}
+    return len(PRICE_MEMORY)
+
 # Per-SKU discovery cache (loaded from DB at run start, flushed at run end).
 # Maps schein_sku -> list[url]. Skips re-discovery of repeat items.
 _disc_cache = {}          # sku -> [urls]      (read-only during the run)
@@ -1998,7 +2018,17 @@ def market_sweep(item: OrderLineItem, max_candidates: int = 14) -> tuple[List[Pr
     # guaranteed backstop for supplier pages no search engine indexes. Added
     # before the cache-hit return below so seeds survive a warm cache, and they
     # lead the candidate list so they claim scrape slots ahead of generic results.
-    _seeds = SEED_URLS.get(item.schein_sku, [])
+    # PRICE MEMORY: the same treatment for sources this SKU has PROVEN good on a
+    # previous run. Discovery is not reproducible — re-running one order returns a
+    # different candidate set and a row the client already approved can disappear
+    # for no reason but ranking. Only the URL is replayed; the price is scraped
+    # fresh here like any other candidate, so nothing stale can reach the report.
+    _mem = list(PRICE_MEMORY.get(item.schein_sku, []))[:PRICE_MEMORY_MAX]
+    _seeds = list(SEED_URLS.get(item.schein_sku, [])) + [
+        u for u in _mem if u not in set(SEED_URLS.get(item.schein_sku, []))]
+    if _mem:
+        log.info("SKU %s — price memory: replaying %d proven source(s)",
+                 item.schein_sku, len(_mem))
     for su in _seeds:
         cu = canonical_url(su)
         if cu not in seen and not is_excluded(cu) and not DOC_EXT_RE.search(cu):

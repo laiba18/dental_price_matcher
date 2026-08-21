@@ -74,6 +74,9 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
     db.set_scrape_db_path(DB_FILE)
     if not skip_search:
         search_mod.load_discovery_cache(conn)
+        nmem = search_mod.load_price_memory(conn)
+        if nmem:
+            log.info("Price memory — %d SKU(s) have proven sources to replay", nmem)
     log.info("Parsed %d items from %s (ref %s)", len(order.items),
              order.source_file, order.reference)
 

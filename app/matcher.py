@@ -888,13 +888,38 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
         for c in verified:
             if c.match_type != "rejected":
                 continue
+            if getattr(c, "marketplace", None):
+                continue    # 🅐/🅦 rows have their own strict same-product path;
+                            # rescuing them floods an item with listings whose
+                            # pack was never stated (7 fired on one Luxatemp run)
             crit = c.criteria or {}
             if crit.get("pack_match") is not False:
+                if _os.environ.get("PACK_RESCUE_DEBUG"):
+                    log.info("  rescue-skip %s: pack_match=%r (not False)",
+                             c.source_site, crit.get("pack_match"))
                 continue          # rejected for some other reason — leave it
-            if not (crit.get("name_match") and crit.get("size_form_match")
-                    and _brand_ok(item, c)):
+            # The SAME wording that fails the pack criterion usually fails the
+            # LLM's name criterion too: net32 lists "Automatrix Introductory
+            # Retainerless Matrix System, 96 Assorted" against an order for
+            # "Automatrix Introductory Kit Ea", and the model reads "96 Assorted"
+            # as a different PRODUCT rather than a different pack. Requiring
+            # name_match here therefore excluded exactly the case this rescue
+            # exists for, so fall back to deterministic token overlap when the
+            # model says no. Brand and size must still be confirmed, and the
+            # result is only ever 'approximate'.
+            _ov = _name_overlap(item, c)
+            if not (crit.get("size_form_match") and _brand_ok(item, c)
+                    and (crit.get("name_match") or _ov >= RESCUE_NAME_OVERLAP)):
+                if _os.environ.get("PACK_RESCUE_DEBUG"):
+                    log.info("  rescue-skip %s: name=%r overlap=%.2f size=%r brand_ok=%r",
+                             c.source_site, crit.get("name_match"), _ov,
+                             crit.get("size_form_match"), _brand_ok(item, c))
                 continue          # only pack may be the failing criterion
             if c.price is None or not price_sane(item, c):
+                if _os.environ.get("PACK_RESCUE_DEBUG"):
+                    log.info("  rescue-skip %s: price=%r sane=%r",
+                             c.source_site, c.price,
+                             c.price is not None and price_sane(item, c))
                 continue
             crit["pack_match"] = None
             c.criteria = crit
@@ -1381,6 +1406,10 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
     # Learn this SKU's real size from whatever the verified exacts agree on, so
     # a future run can reject the wrong-size listing deterministically.
     try:
+        remember_good_sources(item, result.candidates)
+    except Exception:
+        log.warning("SKU %s — price memory write FAILED", sku, exc_info=True)
+    try:
         learn_size_from_exacts(item, result.candidates)
     except Exception:
         # never debug-level: a silent failure here looks identical to "this SKU
@@ -1448,6 +1477,23 @@ def _page_declares(c, mpn) -> bool:
     return n in hay
 
 
+RESCUE_NAME_OVERLAP = float(os.environ.get("RESCUE_NAME_OVERLAP", "0.6"))
+
+
+def _name_overlap(item: OrderLineItem, c: PriceCandidate) -> float:
+    """Fraction of the ordered item's distinctive tokens present on the page.
+    Deterministic counterpart to the LLM's name_match, and scans the URL slug
+    too — net32 states the product in the slug even when the visible title is
+    phrased differently."""
+    ref = f"{item.brand or ''} {item.product_name or item.description}".lower()
+    page = (f"{c.scraped_product_name or ''} {c.title or ''} "
+            f"{(c.url or '').replace('-', ' ').replace('/', ' ')}").lower()
+    tokens = [w for w in re.findall(r"[a-z0-9.]+", ref) if len(w) > 2]
+    if not tokens:
+        return 0.0
+    return sum(1 for w in tokens if w in page) / len(tokens)
+
+
 SIZE_LEARN_MIN_SCORE = int(os.environ.get("SIZE_LEARN_MIN_SCORE", "90"))
 # how much page body to scan for the mass; the size sits in the description
 # block near the top, and scanning further only adds unrelated shipping weights
@@ -1473,6 +1519,44 @@ def apply_learned_sizes(conn, items) -> int:
         n += 1
         log.info("SKU %s — learned size applied: %.1fg (%s)", it.schein_sku,
                  it.size_g, rec.get("status"))
+    return n
+
+
+def remember_good_sources(item, candidates) -> int:
+    """Record the URLs that PROVED good for this SKU this run.
+
+    Discovery is not reproducible: the same order re-run returns a different
+    candidate set, so a source the client already approved can vanish without
+    anything being wrong with it (Automatrix's net32 row, ParaPost Drill's
+    $60.99). Only the URL is remembered — never the price — so the next run
+    re-injects it as a seed and re-scrapes it live. A dead page or a vanished
+    price then drops out naturally, exactly as an undiscovered one would."""
+    n = 0
+    for c in candidates:
+        if c.match_type not in ("exact", "approximate"):
+            continue
+        if getattr(c, "marketplace", None):
+            continue                       # 🅐/🅦 rows have their own sweep
+        if c.price is None or not price_sane(item, c):
+            continue
+        if (getattr(c, "out_of_stock", False)
+                or getattr(c, "price_unreliable", False)
+                or getattr(c, "variant_conflict", False)
+                or c.scraped_product_name is None):
+            continue
+        try:
+            from . import db
+            db.remember_price_source_now(
+                item.schein_sku, c.url, price=c.price,
+                source_site=c.source_site, match_type=c.match_type,
+                confidence=c.confidence,
+                product_name=(c.scraped_product_name or "")[:120])
+            n += 1
+        except Exception:
+            log.warning("SKU %s — could not remember %s", item.schein_sku,
+                        c.url, exc_info=True)
+    if n:
+        log.info("SKU %s — remembered %d proven source(s)", item.schein_sku, n)
     return n
 
 

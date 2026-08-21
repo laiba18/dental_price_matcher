@@ -92,6 +92,24 @@ CREATE TABLE IF NOT EXISTS mpn_store (
     page_mpn TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Sources that have PROVEN good for a SKU. Discovery is not reproducible — the
+-- same order re-run returns a different candidate set, so a row the client
+-- approved can silently vanish. Remembering the URL (never the price) lets the
+-- next run re-inject it as a seed and re-scrape it, so a known-good source is
+-- always considered while the price stays live.
+CREATE TABLE IF NOT EXISTS price_memory (
+    schein_sku TEXT,
+    url TEXT,
+    last_price REAL,
+    source_site TEXT,
+    match_type TEXT,
+    confidence INTEGER,
+    product_name TEXT,
+    first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_verified TEXT DEFAULT CURRENT_TIMESTAMP,
+    times_seen INTEGER DEFAULT 1,
+    PRIMARY KEY (schein_sku, url)
+);
 -- Learned ordered SIZE per SKU, for the items whose Schein description omits it.
 -- Mirrors mpn_store: a 'manual'/'seed' row is a discovery hint only; only
 -- page-consensus across independent verified exacts reaches 'verified', which is
@@ -484,6 +502,53 @@ def get_mpn_store(conn) -> dict:
     except Exception:
         pass
     return out
+
+
+def get_price_memory(conn, schein_sku=None, limit_per_sku: int = 4) -> dict:
+    """{schein_sku: [url, …]} — proven sources, best-priced first."""
+    out: dict = {}
+    try:
+        q = ("SELECT schein_sku, url FROM price_memory "
+             + ("WHERE schein_sku = ? " if schein_sku else "")
+             + "ORDER BY schein_sku, last_price IS NULL, last_price ASC")
+        for sku, url in conn.execute(q, (schein_sku,) if schein_sku else ()):
+            urls = out.setdefault(sku, [])
+            if len(urls) < limit_per_sku:
+                urls.append(url)
+    except Exception:
+        pass
+    return out
+
+
+def remember_price_source_now(schein_sku, url, price=None, source_site=None,
+                              match_type=None, confidence=None,
+                              product_name=None) -> None:
+    """Thread-safe upsert from the per-item workers (mirrors upsert_mpn_now).
+    Keeps first_seen, refreshes last_verified, and counts corroborations."""
+    if not schein_sku or not url:
+        return
+    try:
+        with _scrape_lock:
+            c = sqlite3.connect(_scrape_db_file(), timeout=10)
+            try:
+                c.execute(
+                    "INSERT INTO price_memory(schein_sku, url, last_price, "
+                    "source_site, match_type, confidence, product_name, "
+                    "first_seen, last_verified, times_seen) "
+                    "VALUES (?,?,?,?,?,?,?,datetime('now'),datetime('now'),1) "
+                    "ON CONFLICT(schein_sku, url) DO UPDATE SET "
+                    "last_price=excluded.last_price, "
+                    "match_type=excluded.match_type, "
+                    "confidence=excluded.confidence, "
+                    "product_name=COALESCE(excluded.product_name, product_name), "
+                    "last_verified=datetime('now'), times_seen=times_seen+1",
+                    (schein_sku, url, price, source_site, match_type,
+                     confidence, product_name))
+                c.commit()
+            finally:
+                c.close()
+    except Exception:
+        pass
 
 
 def get_size_store(conn) -> dict:
