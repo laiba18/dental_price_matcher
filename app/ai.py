@@ -1130,7 +1130,7 @@ def extract_and_validate_batch(item, candidates: List[PriceCandidate]) -> None:
         # than ordered, so a multi-pack page (Clinpro 100-pk $272.99 vs 50-pk
         # $137.49) can't feed the model the wrong pack's price. No-op on single-pack
         # pages. Applied to every slice path (validation slices included).
-        md = _mask_wrong_pack(c.scraped_markdown or "", item)
+        md = _mask_wrong_pack(_mask_teaser_prices(c.scraped_markdown or ""), item)
         if getattr(c, "price_locked", False) or getattr(c, "price_structured", False):
             return md[:EXTRACT_LOCKED_PAGE_CHARS]
         if len(md) <= per_page:
@@ -1270,6 +1270,40 @@ EXTRACT_PACK_MASK = os.environ.get("EXTRACT_PACK_MASK", "1") not in ("0", "false
 _PACK_TOKEN_RE = re.compile(
     r"(?<![\d.$])(\d{1,4})\s*[-/ ]?\s*"
     r"(?:pk|pks|pack|packs|bx|box|boxes|ct|cnt|count|cs|case)\b", re.I)
+
+
+EXTRACT_TEASER_MASK = os.environ.get("EXTRACT_TEASER_MASK", "1") not in ("0", "false", "False", "")
+# Storefront teaser wording. Two different lies live behind these phrases:
+#   "From $23.99"       — the CHEAPEST VARIANT of this product, not the one ordered
+#   "As low as $15.49"  — a cross-sell tile for a DIFFERENT product entirely
+#     (Safco's "Best Value Options" block advertises Safco carbide burs partway
+#      down an NTI diamonds page)
+# Client QA 2026-08-31 on the TPH Spectra row: "Your match is for an 'As low as'
+# price. Farther down the same page is the actual price … it's pretty close to
+# schein's" — we reported $47.99 against Schein's $133.53, a saving that does not
+# exist. Same failure as the net32 seller table: taking the cheapest number on the
+# page rather than the one belonging to the ordered variant.
+_TEASER_PRICE_RE = re.compile(
+    r"(?i)\b(as\s+low\s+as|starting\s+at|starts\s+at|from|prices?\s+from)\b"
+    r"[\s:*_]{0,12}\$\s?\d")
+
+
+def _mask_teaser_prices(md: str) -> str:
+    """Blank prices introduced by teaser/cross-sell wording so the model reads the
+    ordered variant's real price instead of the page's cheapest advert."""
+    if not (EXTRACT_TEASER_MASK and md):
+        return md
+    out, last, masked = [], 0, 0
+    for m in _TEASER_PRICE_RE.finditer(md):
+        dollar = md.index("$", m.start())
+        pm = _PAGE_PRICE_RE.match(md, dollar)
+        if not pm:
+            continue
+        out.append(md[last:dollar]); out.append("$—"); last = pm.end(); masked += 1
+    if not masked:
+        return md
+    out.append(md[last:])
+    return "".join(out)
 
 
 def _mask_wrong_pack(md: str, item) -> str:
