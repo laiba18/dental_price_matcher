@@ -530,6 +530,32 @@ EQUIV_MEDIAN_RATIO = float(os.environ.get("EQUIV_MEDIAN_RATIO", "0.35"))
 # is worth showing as a second choice. Only applies when an option already exists;
 # an item with nothing priced still shows any equivalent that beats Schein.
 EQUIV_BEAT_PCT = float(os.environ.get("EQUIV_BEAT_PCT", "15.0"))
+# A DELIVERY DEVICE is not interchangeable with the consumable it delivers, even
+# when the consumable itself is. Client QA 2026-08-31 on the ShortCut GingiBraid+
+# row: "Not a valid match because the dispenser type is not generic, though the
+# cord may be" — we offered a plain retraction cord at $24.80 against an order for
+# the dispenser unit.
+#
+# matcher.py already models this shape in _WRONG_FORM, but only in the direction
+# where the CANDIDATE is the tool and the order is the material (the Fuji capsule
+# applier case). This is the mirror: the ORDER is the device. It lives here rather
+# than in variant_mismatch() deliberately — that function's result feeds
+# name_match, so a misfire there would silently kill exact matches, while here the
+# worst case is one fewer generic suggestion.
+_DEVICE_FORMS = ("dispenser", "shortcut", "applicator", "applier", "gun",
+                 "handle", "holder", "syringe gun")
+
+
+def _device_form_mismatch(item, c) -> bool:
+    """True when the ORDER names a delivery device and the candidate does not."""
+    ordered = f"{getattr(item, 'variant', '') or ''} {item.description or ''}".lower()
+    o_dev = {w for w in _DEVICE_FORMS if re.search(rf"\b{re.escape(w)}\b", ordered)}
+    if not o_dev:
+        return False
+    page = " ".join(p for p in (getattr(c, "scraped_product_name", None),
+                               getattr(c, "title", None),
+                               (getattr(c, "url", None) or "").replace("-", " ")) if p).lower()
+    return not any(re.search(rf"\b{re.escape(w)}\b", page) for w in o_dev)
 # When peers whose SIZE was actually verified exist, they are a far better
 # baseline than every candidate indiscriminately — and a tighter ratio is safe
 # against them. The 8oz PIP order drew 21 candidates, mostly 1.25oz and 2.25oz
@@ -595,6 +621,19 @@ def _find_equivalents(item, candidates, shown_urls: set,
         # explicit False disqualifies; unverified (None) candidates still pass,
         # which keeps the tdsc Gibraltar row the client called a great match.
         if (c.criteria or {}).get("name_match") is False:
+            continue
+        # An explicit SIZE rejection disqualifies an equivalent for the same
+        # reason an explicit NAME rejection does. The deterministic guard below
+        # only catches matcher.py's own "size mismatch after normalization"; when
+        # the model states the conflict in prose instead ("Ordered 25lb powder,
+        # page sells 231g Powder, 120ml Liquid kit" — pearsondental against the
+        # Lucitone 199 order the client already rejected once) the criterion is
+        # False but the phrase never appears. Only an explicit False disqualifies;
+        # unverified (None) still passes, as with name_match.
+        if (c.criteria or {}).get("size_form_match") is False:
+            continue
+        # ordered a delivery device, this is only the consumable — see above
+        if _device_form_mismatch(item, c):
             continue
         # A DETERMINISTIC size rejection is not an LLM opinion — matcher.py sets it
         # only when both sides state a size and they disagree after normalization
