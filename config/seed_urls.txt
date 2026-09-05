@@ -181,3 +181,12 @@
 # 6120400, "Jar without Remover, 8 oz, 1/Pk") but SerpAPI never surfaced the page
 # and the Firecrawl gap-sweep could not rank it, so discovery missed it entirely.
 2424179 | https://www.frontierdental.com/us/en/product/pip-pressure-indicator-paste-jar-without-remover-8-oz-1-pk-35213
+
+# 3120212 Genie VPS Rapid Set 50mL XLight Body 2/Pk — client QA 2026-08-31: "Not
+# sure why this came back as a not good match. It's available on all these sites."
+# net32 carries TWO listings for this product: d-73588 has no sellers at all (every
+# one out of stock, so the page has no price to find) and discovery kept landing on
+# it. d-170928 is the live one — "Genie VPS X-Light Body, Rapid Set Berry Flavor,
+# 2 - 50 mL Redesigned Cartridges", 8 sellers, $26.91 against Schein's $34.95.
+# NB the URL the client sent is the STANDARD-set page, a different variant.
+3120212 | https://www.net32.com/ec/genie-vps-impression-material-xlight-body-rapid-d-170928
