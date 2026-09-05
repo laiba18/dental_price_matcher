@@ -526,6 +526,10 @@ EQUIV_FONT = Font(bold=True, color="6B21A8")            # dark purple label
 # covered because they are surfaced after matching, from candidates the matcher
 # had already set aside. Client QA 2026-08-19.
 EQUIV_MEDIAN_RATIO = float(os.environ.get("EQUIV_MEDIAN_RATIO", "0.35"))
+# How much cheaper an equivalent must be than the priced option above it before it
+# is worth showing as a second choice. Only applies when an option already exists;
+# an item with nothing priced still shows any equivalent that beats Schein.
+EQUIV_BEAT_PCT = float(os.environ.get("EQUIV_BEAT_PCT", "15.0"))
 # When peers whose SIZE was actually verified exist, they are a far better
 # baseline than every candidate indiscriminately — and a tighter ratio is safe
 # against them. The 8oz PIP order drew 21 candidates, mostly 1.25oz and 2.25oz
@@ -615,13 +619,21 @@ def _find_equivalents(item, candidates, shown_urls: set,
     return equivs[:max_results]
 
 
-def _write_equivalent_rows(ws, r: ItemResult) -> None:
-    """Render cross-brand equivalent rows for items with no main options.
-    Clearly labeled so the user knows to verify substitutability."""
+def _write_equivalent_rows(ws, r: ItemResult, beat_price: Optional[float] = None) -> None:
+    """Render cross-brand equivalent rows, clearly labeled so the reader knows to
+    verify substitutability.
+
+    With no priced option above it an equivalent is the only lead, so anything
+    cheaper than Schein qualifies. Sitting UNDER a priced option it has to be
+    materially cheaper than that option (EQUIV_BEAT_PCT) — a generic at the same
+    money is not a choice, just another row to read."""
     item = r.item
     shown = {c.url for c in (r.candidates if hasattr(r, "_shown_opts") else [])
              if getattr(c, "_shown", False)}
     equivs = _find_equivalents(item, r.candidates, shown)
+    if beat_price:
+        ceiling = beat_price * (1.0 - EQUIV_BEAT_PCT / 100.0)
+        equivs = [c for c in equivs if c.price and c.price <= ceiling][:1]
     if not equivs:
         return
     for c in equivs:
@@ -1065,8 +1077,16 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
         # rule 2026-07-15 — no OOS reference row. OOS candidates already never pool
         # or headline; they remain in the Alternate Purchases / Evidence sheets.)
 
-        if not opts:
-            _write_equivalent_rows(ws, r)
+        # Equivalents are no longer reserved for items with NO match. Client QA
+        # 2026-08-31 on the Edge Irrigation row — an EXACT at $10.70 — reads "this
+        # is one where we could use a generic", and on the Acclean house-brand row
+        # "Acclean is a schein private brand … ultimately, I went with a well
+        # rated, but cheaper prophy angle". They want the substitute visible as a
+        # choice, not only as a last resort. Beneath a priced option it must EARN
+        # the row by beating it (see EQUIV_BEAT_PCT), so this cannot pad a report
+        # with equivalents that are no cheaper than what already headlines.
+        _beat = min((c.price for c in opts if c.price), default=None)
+        _write_equivalent_rows(ws, r, beat_price=_beat)
 
         # 🅐/🅦 marketplace rows — always rendered, found or not
         _write_marketplace_rows(ws, r)
