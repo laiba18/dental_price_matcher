@@ -91,6 +91,21 @@ def _clean(val) -> str:
     return "" if s.lower() in ("none", "null", "n/a", "na", "-") else s
 
 
+# A "saving" thinner than this is noise, not a negotiating position: Coe-Soft
+# came back at $951.88 against Schein's $958.30 and the report presented 0.7% as
+# a win. Client QA 2026-08-31: "when the best price found is actually the schein
+# price, we should highlight and say so. So maybe in that case, color the schein
+# price RED, and leave the located price black."
+SCHEIN_COMPETITIVE_PCT = float(os.environ.get("SCHEIN_COMPETITIVE_PCT", "2.0"))
+
+
+def _schein_is_competitive(per_unit: Optional[float], unit_price: float) -> bool:
+    """True when the best public price does not meaningfully beat Schein."""
+    if per_unit is None or not unit_price:
+        return False
+    return (per_unit / unit_price) * 100.0 < SCHEIN_COMPETITIVE_PCT
+
+
 def _savings_pct(per_unit: float, unit_price: float):
     if not unit_price:
         return None
@@ -868,7 +883,9 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
               "available) · ↳ Option 2-3 = next-closest matches with reasoning · "
               "⚡ EQUIVALENT = different brand, same product type (verify before substituting) · "
               "🅐/🅦 = Amazon/Walmart check (price shown only when the same "
-              "product AND pack is verified) · GATED = login pricing, verify manually")
+              "product AND pack is verified) · GATED = login pricing, verify manually · "
+              "a RED Schein Price means Schein is already competitive — the price found "
+              "beats it by under 2%, so there is nothing worth switching for")
     _title_block(ws, title, legend, len(PM_HEADERS), PM_HEADERS, PM_WIDTHS)
 
     groups = []
@@ -990,8 +1007,17 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                        r.item.unit_price, c.price, per_unit, total])
             ridx = ws.max_row
             if n == 1:
+                # Schein already competitive → red the SCHEIN price (col 13) and
+                # leave the located price black, exactly as the client specified.
+                _red = {14}
+                if _schein_is_competitive(per_unit, r.item.unit_price):
+                    _red = {13}
+                    ws.cell(row=ridx, column=12).value = (
+                        f"⚠ SCHEIN IS COMPETITIVE — ${c.price:,.2f} beats Schein by only "
+                        f"${per_unit:,.2f}/unit ({pct:.1f}%); not worth switching supplier. · "
+                        + str(ws.cell(row=ridx, column=12).value or ""))
                 _style_row(ws, ridx, len(PM_HEADERS), pct, band % 2 == 0, PM_WRAP,
-                           link_col=10, url=c.url, bold_cols={16}, red_bold_cols={14})
+                           link_col=10, url=c.url, bold_cols={16}, red_bold_cols=_red)
             else:
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
                            link_col=10, url=c.url, red_bold_cols={14})
