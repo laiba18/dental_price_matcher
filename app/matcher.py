@@ -247,12 +247,28 @@ _MODEL_SUFFIXES = (
     "plus", "ultra", "pro", "max", "mini", "lite", "nano",
     "premier", "select", "classic", "solo", "dual",
     "extra", "xtra", "xt", "xl", "xs",
+    # PACK-TIER names. A manufacturer sells the same material as an Economy pack,
+    # a Professional pack and a Starter kit — different SKUs at very different
+    # prices. An order for the "Coe-Soft Economy Pk" matched a "Coe Soft
+    # Professional Pack" at $130 against $958.30 and reported an 86% saving on a
+    # product nobody ordered (client's own order, 2026-08-27). Neither word was
+    # recognised: "pro" does not match "Professional" on a word boundary.
+    "economy", "professional", "standard", "value", "deluxe",
+    "intro", "introductory", "starter", "trial",
 )
 _MODEL_SUFFIX_RE = re.compile(
     r"\b(" + "|".join(re.escape(s) for s in _MODEL_SUFFIXES) + r")\b", re.I)
 
+# Same tier under two spellings. Without this, an order for the "Automatrix
+# INTRODUCTORY Kit" conflicted with five suppliers listing the identical product
+# as an "INTRO Pkg" — the sets {introductory} and {intro} read as disjoint and the
+# backstop rejected a row the client had approved. Canonicalise before comparing.
+_SUFFIX_SYNONYMS = {"introductory": "intro", "professional": "pro"}
+
+
 def _model_suffix_in(text: str) -> set:
-    return {m.group(1).lower() for m in _MODEL_SUFFIX_RE.finditer(text or "")}
+    return {_SUFFIX_SYNONYMS.get(m.group(1).lower(), m.group(1).lower())
+            for m in _MODEL_SUFFIX_RE.finditer(text or "")}
 
 # Single-letter model identifiers (e.g. "Microbrush X" — the "X" is the model).
 # Must be surrounded by whitespace or string boundary — letters within words

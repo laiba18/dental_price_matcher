@@ -2377,6 +2377,15 @@ def _to_price(v) -> Optional[float]:
         return None
 
 
+# Storefront teaser wording in RAW HTML. Its presence means the page's headline
+# number is the cheapest variant or a cross-sell, not the ordered item's price, so
+# no structured price on that page may be treated as unambiguous. Deliberately
+# limited to unmistakable phrases — a bare "from" is far too common in page copy
+# to be a safe signal.
+_TEASER_HTML_RE = re.compile(
+    r"(?i)\b(as\s+low\s+as|starting\s+at|starts\s+at|prices?\s+from)\b")
+
+
 def _jsonld_price(raw_html: str):
     """Return (price, name, single_offer) from JSON-LD Product data.
 
@@ -2460,13 +2469,25 @@ def structured_price(metadata: dict, raw_html: str):
         return None, None, False
     p, name, single = _jsonld_price(raw_html)
     meta = metadata if isinstance(metadata, dict) else {}
+    # A page that advertises "As low as" is telling you its headline number is the
+    # CHEAPEST variant, not the ordered one — so nothing on it is unambiguous.
+    # Safco's TPH Spectra page carries JSON-LD with offers:null and a lone
+    # <meta product:price:amount content="47.99"> beside an "As low as" label; the
+    # meta branch below trusted that as the product's price and reported a 64%
+    # saving against an order for a different variant. Client QA 2026-08-31:
+    # "your match is for an 'As low as' price ... the actual price is farther down
+    # the same page". When the teaser wording is present, refuse to mark any
+    # structured price unambiguous and let the variant-aware LLM read the page.
+    teaser_page = bool(_TEASER_HTML_RE.search(raw_html or ""))
+    if teaser_page:
+        single = False
     if p is None:
         for k in ("product:price:amount", "og:price:amount", "priceAmount", "price"):
             if meta.get(k) is not None:
                 p = _to_price(meta.get(k))
                 if p:
-                    single = True        # one declared og/product price tag = unambiguous
-                    break
+                    single = not teaser_page   # one declared tag — trustworthy only
+                    break                      # when the page isn't teasing
     if p is None and raw_html:
         mm = _META_PRICE_RE_A.search(raw_html) or _META_PRICE_RE_B.search(raw_html)
         if mm:
