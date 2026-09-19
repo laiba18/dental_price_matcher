@@ -59,8 +59,14 @@ _fc_state = {
     "scrapes": 0,
     "skipped": 0,
     "credits": 0,
+    "rate_limited": 0,
 }
 _fc_lock = threading.Lock()
+
+
+# Consecutive Firecrawl 429s before rotating to the next key. A 429 is a
+# per-minute cap, not a spent key; rotating on the first one would thrash.
+FC_429_ROTATE_AFTER = int(os.environ.get("FC_429_ROTATE_AFTER", "2"))
 
 
 def _rotate_firecrawl_key() -> bool:
@@ -80,12 +86,44 @@ def _rotate_firecrawl_key() -> bool:
     return True
 
 
+def _cycle_firecrawl_key() -> bool:
+    """Move to the next key for a TEMPORARY condition — a per-minute rate limit.
+
+    Unlike _rotate_firecrawl_key, which walks one-way because a key spent of
+    credits stays spent, this WRAPS AROUND: a 429 clears by itself, so an earlier
+    key is a legitimate destination. Keys already dead from a 402 are skipped.
+
+    Without the wrap, rotating on rate limits walked off the end of the key list
+    and the run reported exhausted with 1,111 credits unused across the other two
+    keys — and overdrew the small one to -14 on the way (2026-09-19)."""
+    global FIRECRAWL_KEY
+    n = len(_FIRECRAWL_KEYS)
+    if n < 2:
+        return False
+    with _fc_lock:
+        dead = _fc_state.setdefault("dead_keys", set())
+        start = _fc_key_state["idx"]
+        for step in range(1, n + 1):
+            nxt = (start + step) % n
+            if nxt in dead:
+                continue
+            _fc_key_state["idx"] = nxt
+            FIRECRAWL_KEY = _FIRECRAWL_KEYS[nxt]
+            break
+        else:
+            return False
+    fc_credit_log.info("Firecrawl rate limit — cycled to key %d/%d", nxt + 1, n)
+    return True
+
+
 def _mark_firecrawl_exhausted(reason: str, *, url: str = "", tag: str = "") -> None:
     with _fc_lock:
         if _fc_state["exhausted"]:
             return
     where = f" (triggered by {tag}{url[:80]})" if url else ""
     if reason == "402":
+        with _fc_lock:
+            _fc_state.setdefault("dead_keys", set()).add(_fc_key_state["idx"])
         if _rotate_firecrawl_key():
             fc_credit_log.warning(
                 "Firecrawl 402 on key %d — rotated to next key%s",
@@ -3128,6 +3166,26 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         if status == 402:
             _mark_firecrawl_exhausted("402", url=c.url, tag=tag)
             c.notes = "not verified — Firecrawl credits exhausted (402)"
+            return c
+        # A 429 is a REQUESTS-PER-MINUTE cap, not a spent key, and it was simply
+        # discarding the candidate: one run lost midwestdental on the TPH Spectra
+        # item and three pages to it. The keys are separate accounts (confirmed
+        # with the client 2026-09-19), so each has its own per-minute bucket —
+        # rotating recovers the page instead of dropping it. Only after
+        # FC_429_ROTATE_AFTER consecutive rate limits, so a single burst does not
+        # thrash through the keys, and only once per call.
+        if status == 429:
+            with _fc_lock:
+                _fc_state["rate_limited"] = _fc_state.get("rate_limited", 0) + 1
+                hit = _fc_state["rate_limited"]
+            if hit >= FC_429_ROTATE_AFTER and _cycle_firecrawl_key():
+                with _fc_lock:
+                    _fc_state["rate_limited"] = 0
+                log.warning("%sFirecrawl rate-limited %d× — rotated to the next key, "
+                            "retrying %s", tag, hit, c.url[:70])
+                return firecrawl_verify(c, sku=sku, allow_paid=allow_paid)
+            c.notes = ((c.notes + " · ") if c.notes else "") + (
+                "not verified — Firecrawl rate limit (429)")
             return c
         if status in (404, 410):
             c.match_type = "rejected"
