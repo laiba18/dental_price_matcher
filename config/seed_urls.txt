@@ -190,3 +190,14 @@
 # 2 - 50 mL Redesigned Cartridges", 8 sellers, $26.91 against Schein's $34.95.
 # NB the URL the client sent is the STANDARD-set page, a different variant.
 3120212 | https://www.net32.com/ec/genie-vps-impression-material-xlight-body-rapid-d-170928
+
+# QA 2026-09-19 — product pages the client supplied on their own annotated sheet.
+# 1459369 SILHOUETTE SMALL 24 PK — we matched a 12-count listing on this SAME
+# domain and certified it EXACT; this is the 24-count page ("Wrong Product").
+1459369 | https://ddsdentalsupplies.com/silhouette-breathing-circuit-small-low-profile-nasal-mask-24-box/
+# 5701510 Lead-Free Steam Indicator Tape — reported NO SUPPLIER MATCH while the
+# client found three live sources. Tracking params stripped; canonical_url would
+# drop them anyway, but a seed file should read as the page, not as an ad click.
+5701510 | https://www.delasco.com/products/lead-free-steam-indicator-tape-3-4-x-60-yards
+5701510 | https://honestmed.com/products/mckesson-steam-indicator-tape
+5701510 | https://www.darbydental.com/5256040.html

@@ -34,3 +34,9 @@ gosupps.com
 instacart.com
 # darbydental — members/VIP-only pricing, not a public street price (client 2026-07-15)
 darbydental.com
+
+# Stalls its socket rather than refusing cleanly: a single scrape consumes an
+# item's whole ITEM_TIMEOUT_SEC budget (SKU 4680262 lost its full 300s this way),
+# and it threw three Firecrawl 429s in one run. Login-walled, so it almost never
+# yields a usable public price. Client decision 2026-09-19.
+pattersondental.com

@@ -40,6 +40,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .matcher import pack_compatible
 from .models import EquivalencyFinding, ItemResult, ParsedOrder, PriceCandidate
 
 log = logging.getLogger(__name__)
@@ -530,6 +531,9 @@ EQUIV_MEDIAN_RATIO = float(os.environ.get("EQUIV_MEDIAN_RATIO", "0.35"))
 # is worth showing as a second choice. Only applies when an option already exists;
 # an item with nothing priced still shows any equivalent that beats Schein.
 EQUIV_BEAT_PCT = float(os.environ.get("EQUIV_BEAT_PCT", "15.0"))
+# How far an equivalent's pack may differ from the ordered one, as a ratio either
+# way. 2.0 keeps a 20-for-24 substitute and drops a 4-for-24 one.
+EQUIV_PACK_TOLERANCE = float(os.environ.get("EQUIV_PACK_TOLERANCE", "2.0"))
 # A DELIVERY DEVICE is not interchangeable with the consumable it delivers, even
 # when the consumable itself is. Client QA 2026-08-31 on the ShortCut GingiBraid+
 # row: "Not a valid match because the dispenser type is not generic, though the
@@ -646,9 +650,16 @@ def _find_equivalents(item, candidates, shown_urls: set,
         # implausibly cheap against this item's own peer sellers — see above
         if price_floor and c.price < price_floor:
             continue
-        # pack must match if both are known
-        if ordered_pack and c.pack_qty and c.pack_qty != ordered_pack:
-            continue
+        # PACK BOUND. A substitute legitimately comes in a different pack — 20 for
+        # an ordered 24 is still a useful alternative — so exact equality was too
+        # strict here. But 4 nasal hoods against an order for 24 is not a
+        # substitute, it is a different purchase, and it was shown as a $120
+        # saving (QA 2026-09-19). Allow a modest difference, reject a different
+        # order of magnitude. Still silent when the page never states a quantity.
+        if ordered_pack and c.pack_qty:
+            ratio = max(c.pack_qty, ordered_pack) / min(c.pack_qty, ordered_pack)
+            if ratio > EQUIV_PACK_TOLERANCE:
+                continue
         dom = _domain(c.url)
         if dom in seen_domains:
             continue
@@ -838,14 +849,30 @@ def _write_marketplace_rows(ws, r: ItemResult) -> None:
             generic = why == "generic"
             if generic:
                 src_type = "Generic/Equivalent"
+            # "verified" was unconditional boilerplate, printed even when the
+            # criteria said otherwise. A Walmart row claimed "same product & pack
+            # verified" and $89.70/unit against an order for FujiCEM 2 while the
+            # very same note recorded "Product name is 'FujiCEM Evolve' instead
+            # of…" — a different generation of the cement (QA 2026-09-19). Say
+            # what the criteria actually established.
+            _crit = best.criteria or {}
+            _name_ok = _crit.get("name_match") is not False
+            _pack_ok = pack_compatible(item, best) is True or _crit.get("pack_match") is True
+            if _name_ok and _pack_ok:
+                _conf = "same product & pack verified on the listing page"
+            elif not _name_ok:
+                _conf = ("⚠ PRODUCT NOT CONFIRMED — the listing is not clearly the "
+                         "ordered item; verify before treating this as a saving")
+            else:
+                _conf = ("pack not confirmed on the listing — verify the quantity "
+                         "before ordering")
             if best.price < item.unit_price:
                 row_label, sp, st = f"   {label}", per_unit, total
-                note = (f"{name} price — ${per_unit:,.2f}/unit below Schein · same "
-                        f"product & pack verified on the listing page")
+                note = f"{name} price — ${per_unit:,.2f}/unit below Schein · {_conf}"
             else:
                 row_label, sp, st = f"   {label} (reference)", "", ""
                 note = (f"{name} reference price — ${abs(per_unit):,.2f}/unit ABOVE "
-                        f"Schein (shown for reference) · same product & pack verified")
+                        f"Schein (shown for reference) · {_conf}")
             if generic:
                 row_label += " (generic)"
                 note = (f"GENERIC EQUIVALENT — verify before substituting · house-brand "
@@ -1019,6 +1046,18 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                           "Verify clinical equivalence before substituting.")
             elif _is_exact_cand(r.item, c):
                 base = "Exact — all four trust criteria confirmed"
+                # ...except that "confirmed" was not always earned. pack_compatible()
+                # abstains whenever the PAGE's own quantity could not be read, and
+                # the model's assertion then stands unchallenged. QA 2026-09-19: a
+                # 12-pack of nasal masks was certified EXACT (98%) against a 24-pack
+                # order — the page's "12" appears only in its URL slug, so nothing
+                # deterministic ever compared them. Say what was actually checked;
+                # a buyer who reads "all four confirmed" is entitled to rely on it.
+                if (r.item.pack_qty and pack_compatible(r.item, c) is None):
+                    base = ("Exact on brand, product and size — PACK NOT VERIFIED: the "
+                            f"page never states its own quantity, so the ordered "
+                            f"{r.item.pack_qty}/pack could not be confirmed. Check the "
+                            "pack size before ordering.")
                 if getattr(c, "variant_unverified", False):
                     base += (" · VARIANT UNVERIFIED — page did not confirm the ordered "
                              f"variant ({r.item.variant or 'specified variant'}); verify before buying")

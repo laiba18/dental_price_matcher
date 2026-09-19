@@ -566,5 +566,21 @@
     "enabled": true,
     "type": "marketplace",
     "priority": 910
+  },
+  {
+    "id": "darbydental.com",
+    "domain": "darbydental.com",
+    "label": "darbydental.com",
+    "enabled": true,
+    "type": "dental_supplier",
+    "priority": 911
+  },
+  {
+    "id": "delasco.com",
+    "domain": "delasco.com",
+    "label": "delasco.com",
+    "enabled": true,
+    "type": "medical_supplier",
+    "priority": 912
   }
 ]

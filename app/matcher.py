@@ -124,7 +124,18 @@ _PACK_COUNT_RES = (
     re.compile(r"\bcontains?:?\s+(\d{1,4})\b", re.I),                       # "Contains: 5 per Package"
     re.compile(r"(\d{1,4})\s*(?:per|/)\s*(?:pack|pkg|package|box|bx|case|ca|carton|ctn|refill)\b", re.I),
     re.compile(r"\b(?:pack|package|pkg|box|case|carton|bag)\s+of\s+(\d{1,4})\b", re.I),
-    re.compile(r"\b(\d{1,4})\s*[-/]?\s*(?:pk|pack|pkg|count|ct|pcs|pieces|posts)\b", re.I),
+    # Count AFTER the container word, with no "of": surgimac lists the product we
+    # wrongly offered against a 24-pack order as a "Variety Pack 4 Nasal Hoods".
+    # Its quantity was never read, so the pack check abstained and a 4-piece item
+    # was presented as a substitute for 24 (QA 2026-09-19).
+    re.compile(r"\b(?:pack|pkg|box|set|kit)\s+(\d{1,4})\s*(?=[a-z])", re.I),
+    # CONTAINER words belong here too. "…-nasal-mask-24-box" states a pack of 24
+    # as plainly as "24/pk" does, and without box/case/carton the correct 24-count
+    # listing read as pack-unknown while a 12-count one was certified as matching
+    # (QA 2026-09-19). Hyphen and slash are allowed between number and word so a
+    # URL slug parses the same as prose.
+    re.compile(r"\b(\d{1,4})\s*[-/]?\s*"
+               r"(?:pk|pack|pkg|count|ct|pcs|pieces|posts|box|bx|case|carton|ctn|bag)\b", re.I),
 )
 _SINGLE_RE = re.compile(
     r"\b(?:sold\s+(?:individually|singly|separately)|single\s+(?:post|unit|item|piece|pack)|"
@@ -179,7 +190,14 @@ def pack_from_page(c: PriceCandidate) -> Optional[int]:
     head = " ".join(p for p in (getattr(c, "scraped_product_name", None),
                                 getattr(c, "title", None)) if p)
     body = (getattr(c, "scraped_markdown", None) or "")[:1200]   # buy-box region only
-    for text in (head, body):
+    # The URL SLUG is often the only place a store states its pack — the 24-count
+    # nasal-mask listing the client pointed to says so only in
+    # "…-nasal-mask-24-box". Read as its own source AFTER the page text, and only
+    # through the explicit patterns above, so a bare number inside a product code
+    # ("sil2-sm-12") is never mistaken for a quantity.
+    slug = ((getattr(c, "url", None) or "").split("?")[0].rstrip("/")
+            .rsplit("/", 1)[-1].replace("-", " "))
+    for text in (head, body, slug):
         if not text:
             continue
         if _SINGLE_RE.search(text):
@@ -187,7 +205,10 @@ def pack_from_page(c: PriceCandidate) -> Optional[int]:
         for rx in _PACK_COUNT_RES:
             m = rx.search(text)
             if m and 1 <= int(m.group(1)) <= 5000:
-                return int(m.group(1))
+                v = int(m.group(1))
+                if 1900 <= v <= 2100:      # "Intro Kit 2024 edition" is a year
+                    continue
+                return v
     return None
 
 
@@ -255,18 +276,32 @@ _MODEL_SUFFIXES = (
     # recognised: "pro" does not match "Professional" on a word boundary.
     "economy", "professional", "standard", "value", "deluxe",
     "intro", "introductory", "starter", "trial",
+    # PRODUCT GENERATIONS. A manufacturer replaces a line but keeps the name:
+    # FujiCEM 2 and FujiCEM Evolve are different cements at different prices. We
+    # sold an Evolve listing as a FujiCEM 2 match and claimed $89.70/unit, while
+    # our own note recorded "Product name is 'FujiCEM Evolve' instead of…"
+    # (QA 2026-09-19). A numeric generation ("FujiCEM 2") is NOT detected here —
+    # see the note on _model_suffix_in; that row is caught by the marketplace
+    # verification wording instead.
+    "evolve", "advance", "advanced", "legacy", "original",
 )
 _MODEL_SUFFIX_RE = re.compile(
-    r"\b(" + "|".join(re.escape(s) for s in _MODEL_SUFFIXES) + r")\b", re.I)
-
-# Same tier under two spellings. Without this, an order for the "Automatrix
-# INTRODUCTORY Kit" conflicted with five suppliers listing the identical product
-# as an "INTRO Pkg" — the sets {introductory} and {intro} read as disjoint and the
-# backstop rejected a row the client had approved. Canonicalise before comparing.
-_SUFFIX_SYNONYMS = {"introductory": "intro", "professional": "pro"}
+    r"\b(" + "|".join(re.escape(x) for x in _MODEL_SUFFIXES) + r")\b", re.I)
+# Same tier under two spellings — canonicalise before comparing, or an order for
+# an "Introductory Kit" conflicts with five suppliers listing it as an "Intro Pkg".
+_SUFFIX_SYNONYMS = {"introductory": "intro", "professional": "pro",
+                    "advanced": "advance"}
 
 
 def _model_suffix_in(text: str) -> set:
+    """Variant-distinguishing tokens: model suffixes, pack tiers and named
+    product generations.
+
+    NUMERIC/roman generations were tried here and removed. Live runs showed the
+    pattern reading a pack count as a generation ("…XLight Body 2/Pk" -> "2") and
+    a hyphenated name as one ("X-Light" -> "x"), which rejected correct Genie and
+    NX3 listings at four suppliers. Numbers in dental product titles are far more
+    often sizes and counts than generations; the word forms below are safe."""
     return {_SUFFIX_SYNONYMS.get(m.group(1).lower(), m.group(1).lower())
             for m in _MODEL_SUFFIX_RE.finditer(text or "")}
 
