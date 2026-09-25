@@ -965,6 +965,42 @@ def load_seed_urls() -> dict:
     return out
 
 
+def load_generic_modifiers() -> list:
+    """Descriptors that do not change which product you receive.
+
+    A Schein description may carry regulatory or marketing wording the rest of
+    the market simply omits. Searching it literally then excludes the identical
+    product: "Lead-Free Steam Indicator Tape" missed net32's plain "Autoclave
+    Sterilization Indicator Tape" — same 3/4" x 60-yard roll, about $1.59/unit
+    under Schein — and the item was reported as having no cheaper supplier
+    (client QA 2026-09-10). Client-maintained; deliberately NOT a general
+    stop-word list, since "sterile" or "latex-free" DO change the SKU."""
+    f = CONFIG_DIR / "generic_modifiers.txt"
+    if not f.exists():
+        return []
+    out = []
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip().lower()
+        if line:
+            out.append(line)
+    return sorted(out, key=len, reverse=True)      # longest phrase first
+
+
+GENERIC_MODIFIERS = load_generic_modifiers()
+
+
+def strip_generic_modifiers(q: str) -> str:
+    """Remove non-differentiating descriptors; returns the query unchanged when
+    none apply, and never strips the query down to nothing."""
+    if not q or not GENERIC_MODIFIERS:
+        return q
+    out = q
+    for phrase in GENERIC_MODIFIERS:
+        out = re.sub(rf"\b{re.escape(phrase)}\b[\s-]*", " ", out, flags=re.I)
+    out = re.sub(r"\s{2,}", " ", out).strip(" -,")
+    return out if len(out) >= 6 else q
+
+
 SEED_URLS = load_seed_urls()
 
 # Proven-source replay (see the injection site in market_sweep). Loaded once per
@@ -1409,11 +1445,21 @@ def _serpapi(params: dict) -> dict:
 
 
 def _item_queries(item: OrderLineItem) -> List[str]:
-    """Brand query + generic (brand-stripped) query from the AI parse step."""
+    """Brand query + generic (brand-stripped) query from the AI parse step, plus
+    a variant with non-differentiating descriptors removed.
+
+    That last one exists because a Schein description can carry wording the rest
+    of the market omits: "Lead-Free Steam Indicator Tape" never reached net32's
+    plain "Autoclave Sterilization Indicator Tape" — the same roll, cheaper than
+    Schein — and the item was reported as having no cheaper supplier. It is added
+    only when stripping actually changes the query, so nothing is spent on a
+    duplicate search."""
     queries = []
-    for q in (item.search_query or item.description,
+    base = (item.search_query or item.description or "").strip()
+    for q in (base,
               getattr(item, "generic_query", None),
-              getattr(item, "mpn_query", None)):
+              getattr(item, "mpn_query", None),
+              strip_generic_modifiers(base)):
         q = (q or "").strip()
         if q and q.lower() not in (x.lower() for x in queries):
             queries.append(q)
