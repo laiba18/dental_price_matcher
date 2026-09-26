@@ -687,22 +687,40 @@ def _write_equivalent_rows(ws, r: ItemResult, beat_price: Optional[float] = None
     if not equivs:
         return
     for c in equivs:
-        per_unit = round(item.unit_price - c.price, 2)
+        # NORMALISE ACROSS PACK SIZES. Subtracting a 12-pack's price from a
+        # 24-pack order's price is not a saving, it is an arithmetic error: a
+        # $127.29 12-pack against a $234.99 24-pack was reported as $107.70 saved
+        # when the same 24 pieces actually cost $254.58 there — $19.59 MORE than
+        # Schein. Client QA 2026-09-10: "make sure normalized/extrapolated pricing
+        # is clearly marked whenever pack sizes differ." Restate the candidate at
+        # the ordered pack size and say so in the row.
+        cmp_price, norm_note = c.price, ""
+        if item.pack_qty and c.pack_qty and c.pack_qty != item.pack_qty:
+            cmp_price = round(c.price * (item.pack_qty / c.pack_qty), 2)
+            norm_note = (f" · PRICE NORMALISED: listed at ${c.price:,.2f} for "
+                         f"{c.pack_qty}, shown as ${cmp_price:,.2f} for the ordered "
+                         f"{item.pack_qty} (${c.price / c.pack_qty:,.2f} vs Schein's "
+                         f"${item.unit_price / item.pack_qty:,.2f} per piece)")
+        per_unit = round(item.unit_price - cmp_price, 2)
         total = round(per_unit * item.qty, 2)
+        if per_unit <= 0:
+            # normalising can reveal the "cheaper" pack is dearer per piece
+            norm_note += " · NO SAVING once pack sizes are matched"
+            per_unit, total = "", ""
         pack_note = ""
         if c.pack_qty is None:
             pack_note = " · pack size not confirmed on page — verify before ordering"
         name_short = (c.scraped_product_name or c.title or "")[:60]
         note = (f"EQUIVALENT PRODUCT — different brand, same product type "
                 f"({name_short}). Verify clinical equivalence before "
-                f"substituting{pack_note}.")
+                f"substituting{pack_note}{norm_note}.")
         ws.append([item.schein_sku, _dash(item.mpn),
                    f"   ↳ ⚡ Equivalent — {item.description}",
                    item.qty, item.unit_price, c.price,
                    f"EQUIVALENT ({c.confidence}%)" if c.confidence else "EQUIVALENT",
                    c.source_site, _source_type_for(c), c.url,
                    _dash(_clean(c.pack_condition)), note,
-                   item.unit_price, c.price, per_unit, total])
+                   item.unit_price, cmp_price, per_unit, total])
         ridx = ws.max_row
         _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,
                    link_col=10, url=c.url, red_bold_cols={14})
@@ -1018,17 +1036,46 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 _money(ws, ridx, [5, 13])
             ws.row_dimensions[ridx].height = 44
         for n, c in enumerate(opts, start=1):
-            per_unit = round(r.item.unit_price - c.price, 2)
+            # QA 2026-09-10 (Silhouette nasal mask): a 12/bx listing was compared
+            # straight against a 24/bx order, so the savings column claimed $107.70
+            # on half the product. The row's own label already said PACK MISMATCH —
+            # the label was honest and the number was not. Restate the page price as
+            # the ordered quantity would cost, and if that erases the saving, say so.
+            # BULK VALUE rows are exempt: buying a larger pack for less is a real win
+            # and those rows carry their own approved per-unit explanation below.
+            cmp_price, pack_note = c.price, ""
+            if (r.item.pack_qty and c.pack_qty and c.pack_qty != r.item.pack_qty
+                    and not _bulk_benefit(r.item, c)):
+                cmp_price = round(c.price * (r.item.pack_qty / c.pack_qty), 2)
+                pack_note = (
+                    f" · PRICE NORMALISED FOR PACK SIZE: listed at ${c.price:,.2f} for "
+                    f"{c.pack_qty}, which is ${cmp_price:,.2f} for the ordered "
+                    f"{r.item.pack_qty} (${c.price / c.pack_qty:,.2f} vs Schein's "
+                    f"${r.item.unit_price / r.item.pack_qty:,.2f} per piece). Savings are "
+                    f"stated on the ordered quantity, not on the smaller pack.")
+            per_unit = round(r.item.unit_price - cmp_price, 2)
             total = round(per_unit * r.item.qty, 2)
+            if pack_note and per_unit <= 0:
+                pack_note += (" · NO SAVING once the pack sizes are matched — this "
+                              "listing is dearer than Schein per piece.")
             pct = _savings_pct(per_unit, r.item.unit_price)
+            # QA 2026-09-26 (Pressure Indicator Paste 8oz): a price the pipeline
+            # never read off the product page was still written into the savings
+            # columns — $18.50 from a search listing against Schein's $174.22 became
+            # a certified "$311.44 total saving" on the same item the client had
+            # already rejected twice. A number we decline to stand behind cannot
+            # carry a saving; show the row, show the price, claim nothing.
+            price_unverified = bool(getattr(c, "price_unreliable", False))
             # explicit flags the client must see at a glance
             flags = []
             if c.price >= r.item.unit_price:
                 flags.append(f"⚠ NO SAVING — ${c.price:,.2f} is HIGHER than Schein "
                              f"${r.item.unit_price:,.2f}; shown as closest match only")
-            if getattr(c, "price_unreliable", False):
-                flags.append("⚠ PRICE UNRELIABLE — auto-extracted price conflicts with "
-                             "the listing; confirm on the page before using")
+            if price_unverified:
+                flags.append("⚠ PRICE NOT CONFIRMED ON THE PAGE — this figure comes "
+                             "from the search listing or conflicts with the page, so NO "
+                             "SAVING IS CLAIMED for it; open the URL and confirm the price "
+                             "before using this row")
             if getattr(c, "out_of_stock", False):
                 flags.append("⚠ OUT OF STOCK — this listing is no longer available; "
                              "not a buyable price, shown for reference only")
@@ -1045,7 +1092,10 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                           "no competitor sells the exact Schein house-brand item. "
                           "Verify clinical equivalence before substituting.")
             elif _is_exact_cand(r.item, c):
-                base = "Exact — all four trust criteria confirmed"
+                base = ("Product identity matches on all four criteria, but the PRICE "
+                        "was not confirmed on the page — treat the figure as a lead, "
+                        "not a quote") if price_unverified else \
+                       "Exact — all four trust criteria confirmed"
                 # ...except that "confirmed" was not always earned. pack_compatible()
                 # abstains whenever the PAGE's own quantity could not be read, and
                 # the model's assertion then stands unchallenged. QA 2026-09-19: a
@@ -1081,7 +1131,7 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                     parts.append(note)
                 reason = " · ".join(parts) or "Not exact — could not confirm all four criteria"
 
-            reason = flag_prefix + reason   # prepend ⚠ NO SAVING / PRICE UNRELIABLE flags
+            reason = flag_prefix + reason + pack_note
             src_type = _source_type_for(c)
 
             # Client request: Schein unit price (and identifying cols) carry onto
@@ -1094,7 +1144,9 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                        r.item.qty, r.item.unit_price, c.price, _score_label(r.item, c),
                        c.source_site, src_type, c.url,
                        _dash(_clean(c.pack_condition)), reason,
-                       r.item.unit_price, c.price, per_unit, total])
+                       r.item.unit_price, c.price,
+                       "" if (price_unverified or (pack_note and per_unit <= 0)) else per_unit,
+                       "" if (price_unverified or (pack_note and per_unit <= 0)) else total])
             ridx = ws.max_row
             if n == 1:
                 # Schein already competitive → red the SCHEIN price (col 13) and
@@ -1102,11 +1154,19 @@ def write_price_match_report(order: ParsedOrder, results: List[ItemResult],
                 _red = {14}
                 if _schein_is_competitive(per_unit, r.item.unit_price):
                     _red = {13}
+                    _cmp = cmp_price if pack_note else c.price
+                    _banner = (
+                        f"⚠ SCHEIN IS CHEAPER — ${_cmp:,.2f} for the ordered quantity is "
+                        f"${abs(per_unit):,.2f}/unit MORE than Schein's ${r.item.unit_price:,.2f}; "
+                        f"stay with Schein."
+                        if per_unit <= 0 else
+                        f"⚠ SCHEIN IS COMPETITIVE — ${_cmp:,.2f} beats Schein by only "
+                        f"${per_unit:,.2f}/unit ({pct:.1f}%); not worth switching supplier.")
                     ws.cell(row=ridx, column=12).value = (
-                        f"⚠ SCHEIN IS COMPETITIVE — ${c.price:,.2f} beats Schein by only "
-                        f"${per_unit:,.2f}/unit ({pct:.1f}%); not worth switching supplier. · "
-                        + str(ws.cell(row=ridx, column=12).value or ""))
-                _style_row(ws, ridx, len(PM_HEADERS), pct, band % 2 == 0, PM_WRAP,
+                        _banner + " · " + str(ws.cell(row=ridx, column=12).value or ""))
+                _style_row(ws, ridx, len(PM_HEADERS),
+                           None if price_unverified else pct,
+                           band % 2 == 0, PM_WRAP,
                            link_col=10, url=c.url, bold_cols={16}, red_bold_cols=_red)
             else:
                 _style_row(ws, ridx, len(PM_HEADERS), None, False, PM_WRAP,

@@ -1,0 +1,23 @@
+# Non-differentiating descriptors, one per line. Client-maintained.
+#
+# Marketing or regulatory wording that appears in a Schein description but is
+# NOT what makes the product what it is. When a phrase here is the only thing
+# separating the order from a listing, it is stripped from the brand-free search
+# query so the functionally identical product is still found.
+#
+# Client QA 2026-09-10 on the steam indicator tape: "Net 32 match would've been
+# better. Tool was fooled by the nonsense about 'Lead Free'." Every modern
+# indicator tape is lead-free, so searching the phrase literally excluded the
+# same product listed as plain "Autoclave Sterilization Indicator Tape" — about
+# $1.59/unit cheaper than Schein, reported as no saving available.
+#
+# Add ONLY words that never change which product you receive. Do NOT add
+# genuinely distinguishing terms — "sterile" vs "non-sterile", "latex-free",
+# "powder-free" and shade or size words all change the SKU.
+lead-free
+lead free
+non-toxic
+nontoxic
+premium quality
+new and improved
+professional grade

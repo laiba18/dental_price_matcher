@@ -201,3 +201,14 @@
 5701510 | https://www.delasco.com/products/lead-free-steam-indicator-tape-3-4-x-60-yards
 5701510 | https://honestmed.com/products/mckesson-steam-indicator-tape
 5701510 | https://www.darbydental.com/5256040.html
+
+# QA 2026-09-10 — client-supplied reference pages.
+# 5701510 Lead-Free Steam Indicator Tape — net32 lists the same 3/4" x 60-yard
+# roll as plain "Autoclave Sterilization Indicator Tape"; sellers from ~$4.76
+# against Schein's $6.35, while we reported no cheaper supplier.
+5701510 | https://www.net32.com/ec/rmh3-dental-autoclave-sterilization-indicator-tape-3-d-190106
+# 3333664 FujiCEM 2 — the client flagged this as a missed source. It is NOT
+# cheaper (Frontier $329.99 vs our $266.59 at Crazy Dental, and vs Schein
+# $299.65) but it is a confirmed-correct product page, so it is worth pinning in
+# case its price moves.
+3333664 | https://www.frontierdental.com/us/en/product/fujicem-2-glass-ionomer-luting-cement-automix-paste-pack-refill-7-2-ml-2-pk-36511
