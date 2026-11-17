@@ -217,9 +217,23 @@ def volume_compatible(item: OrderLineItem, c: PriceCandidate) -> Optional[bool]:
     mass are compared independently and never against each other; when only one
     side states a size, or the two use different scales, the answer is None (no
     opinion) exactly as before."""
-    page = (c.scraped_product_name or "") + " " + (c.title or "")
+    # Read every place a page states its size: the model's product name, the
+    # listing title, the structured-data name and the URL slug. Recheck
+    # 2026-11-18: a 4 oz PIP pump jar survived this check for an 8 oz order because
+    # the model's name omitted the size and the title was empty — the slug
+    # "pip-4oz-pump-paste" said it all along.
+    page = " ".join(x for x in (c.scraped_product_name, c.title,
+                                getattr(c, "structured_name", None),
+                                (c.url or "").rstrip("/").rsplit("/", 1)[-1].replace("-", " ")) if x)
     a = normalize_volume_ml(item.description)
     b = normalize_volume_ml(page)
+    if a is not None and b is None:
+        head = (getattr(c, "scraped_markdown", None) or "")[:1500]
+        vols = {normalize_volume_ml(m.group(0))
+                for m in re.finditer(r"\b\d+(?:\.\d+)?\s*(?:ml|mL|ML|cc)\b", head)}
+        vols.discard(None)
+        if len(vols) == 1:                      # one unambiguous size in the buy box
+            b = vols.pop()
     if a is not None and b is not None:
         return abs(a - b) / a <= 0.02
     # ordered mass may come from the description or, when Schein omits it, from
@@ -415,6 +429,26 @@ def _colors_in(text: str) -> set:
 
 _SETSPEED_RE = re.compile(r"\b(rapid|fast|standard|regular)[\s-]+set\b", re.I)
 _SETSPEED_CANON = {"fast": "rapid", "regular": "standard"}
+# Commodity consumables where a different brand's "similar" product IS the
+# generic the client wants to see (gutta percha, paper points, mixing tips...).
+_COMMODITY_RE = re.compile(
+    r"(?i)\b(gutta[\s-]?percha|paper\s+points?|mixing\s+tips?|cotton\s+rolls?|"
+    r"saliva\s+ejectors?|prophy\s+(?:angles?|cups?|paste)|syringes?|needles?|"
+    r"gloves?|bibs?|tray\s+covers?|sterilization\s+pouch|indicator\s+tape|"
+    r"articulating\s+paper|applicator\s+tips?|micro\s*brush)\b")
+# ---- MATERIAL (QA 2026-10-08): "Mity K-Files" are Kerr's TITANIUM line; the
+# report certified stainless-steel K-files from two sellers as the match. Both
+# sides must name a material; "Mity" on the ordered side implies titanium.
+_MATERIAL_RE = re.compile(
+    r"\b(titanium|nickel[\s-]*titanium|ni[\s-]?ti|stainless(?:[\s-]+steel)?|\bs\.?s\.?\b)\b", re.I)
+def _material_in(text: str) -> set:
+    out = set()
+    for m in _MATERIAL_RE.finditer(text or ""):
+        t = m.group(1).lower()
+        out.add("stainless" if t.startswith(("stainless", "s")) and "titan" not in t else "titanium")
+    if re.search(r"\bmity\b", text or "", re.I):
+        out.add("titanium")
+    return out
 
 
 def _setspeed_in(text: str) -> set:
@@ -488,6 +522,11 @@ def variant_mismatch(item: OrderLineItem, c: PriceCandidate) -> Optional[str]:
     if oss and css and oss.isdisjoint(css):
         return (f"set-speed mismatch (ordered {'/'.join(sorted(oss))} set, "
                 f"page {'/'.join(sorted(css))} set)")
+    # ---- MATERIAL: titanium vs stainless files are different instruments
+    omat, cmat = _material_in(ordered_txt), _material_in(cand_all)
+    if omat and cmat and omat.isdisjoint(cmat):
+        return (f"material mismatch (ordered {'/'.join(sorted(omat))}, "
+                f"page {'/'.join(sorted(cmat))})")
     # ---- model SUFFIX: "Microbrush X" vs "Microbrush Plus", "OptiBond FL"
     # vs "OptiBond Solo Plus". Both sides must name a suffix; missing suffix on
     # one side stays silent (the page may just omit it in the title).
@@ -757,6 +796,19 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
     # attempted per item (the free-fetch HTTP GETs add latency), so a 40-URL item
     # doesn't free-fetch all 40.
     scrape_cap = int(_os.environ.get("SCRAPE_CAP_PER_ITEM", "12"))   # PAID Firecrawl cap
+    # FAIR SHARE (QA 2026-10-08): the per-run cap was first-come-first-served, so
+    # with 40 paid scrapes allowed per item and 320 per run, eight items could
+    # lawfully spend the whole run and the last two got nothing — items 8, 9 and
+    # 10 of a 10-item order all lost their Net32 match this way. Cap each item at
+    # its share of what is LEFT for the items still to run, never below a floor,
+    # so the tail of an order is priced with the same seriousness as its head.
+    _left = search.FIRECRAWL_MAX_SCRAPES - search._fc_state.get("scrapes", 0)
+    _todo = max(1, int(search._fc_state.get("items_remaining") or 1))
+    _fair = max(int(_os.environ.get("FAIR_SHARE_MIN_SCRAPES", "6")), _left // _todo)
+    if _fair < scrape_cap:
+        log.info("SKU %s — paid cap fair-shared to %d (run has %d scrapes left for %d item(s))",
+                 sku, _fair, _left, _todo)
+        scrape_cap = _fair
     free_max = int(_os.environ.get("FREE_FETCH_MAX", "24"))          # total candidates attempted
     verified: List[PriceCandidate] = []
     exacts_found = 0
@@ -1003,6 +1055,17 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                              sku, c.source_site, pg, item.pack_qty)
         if not price_sane(item, c):
             c.match_type = "rejected"
+            if c.price is None and not c.rejected_reason:
+                # NO PRICE is not a sanity failure. For weeks the evidence sheet read
+                # "price None failed sanity vs Schein unit" on net32 pages that had
+                # in fact been SKIPPED as oversized — the real reason sat in c.notes
+                # and never reached the report (QA 2026-10-08). Say what happened.
+                _why = (c.notes or "").strip()
+                if _why.lower().startswith(("skipped", "scrape returned empty",
+                                            "page verification", "not scraped")):
+                    c.rejected_reason = f"no price read — {_why}"
+                else:
+                    c.rejected_reason = "no price found on the page"
             c.rejected_reason = (c.rejected_reason or
                                  f"price {c.price} failed sanity vs Schein unit {item.unit_price}")
         elif pack_compatible(item, c) is False:
@@ -1040,6 +1103,27 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
     for c in verified:
         if not getattr(c, "variant_conflict", False):
             vm = variant_mismatch(item, c)
+            # MATERIAL UNCONFIRMED (QA 2026-10-08): "Mity K-Files" are Kerr's
+            # titanium line. The stainless generics that replaced them in the report
+            # mostly never SAY "stainless", so the both-sides-must-state rule above
+            # stays silent. When the ORDER names a material and a DIFFERENT brand's
+            # page names none, the identity is unverified, not confirmed — drop it
+            # to the alternate sheet rather than price-match it. Same-brand pages
+            # (Kerr's own listing) are untouched: the brand line implies the material.
+            if (not vm and not getattr(c, "variant_unverified", False)
+                    and (c.criteria or {}).get("brand_match") is False):
+                _om = _material_in(f"{getattr(item, 'variant', '') or ''} {item.description or ''}")
+                _cm = _material_in(" ".join(p for p in (getattr(c, "scraped_variant", None),
+                                                        getattr(c, "scraped_product_name", None),
+                                                        getattr(c, "title", None)) if p))
+                if _om and not _cm:
+                    c.variant_unverified = True
+                    c.notes = ((c.notes + " · ") if c.notes else "") + (
+                        f"MATERIAL NOT CONFIRMED — ordered {'/'.join(sorted(_om))}; this "
+                        f"different-brand page states no material, so it may be a "
+                        f"different instrument (routed to alternate, VERIFY)")
+                    log.info("SKU %s — %s material unconfirmed (ordered %s, page silent)",
+                             sku, c.source_site, "/".join(sorted(_om)))
             if vm:
                 # A manually SEEDED URL (seed_urls.txt) is an operator assertion
                 # "this IS the match" — for a COLOR-only difference on such a
@@ -1095,11 +1179,30 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                      sku, c.source_site)
     # tag generic equivalents (brand differs but product/size/pack match) and
     # carry the variant-unverified flag forward (Q1 + Q2 decisions)
+    _gen_tol = float(_os.environ.get("EQUIV_PACK_TOLERANCE", "2.0"))
     for c in verified:
         crit = c.criteria or {}
-        if (item.brand and crit.get("name_match") and crit.get("size_form_match")
-                and crit.get("pack_match") and not crit.get("brand_match")):
+        if not (item.brand and crit.get("size_form_match") and not crit.get("brand_match")):
+            continue
+        # pack: exact, or a modest difference (120 for an ordered 100), or unstated
+        pc = pack_compatible(item, c)
+        if pc is False:
+            ratio = (max(item.pack_qty, c.pack_qty) / max(1, min(item.pack_qty, c.pack_qty))
+                     if item.pack_qty and c.pack_qty else 99.0)
+            if ratio > _gen_tol:
+                continue
+        # name: confirmed, or — for a commodity consumable — "similar" in the
+        # model's own words (its only objection being brand/pack). QA 2026-10-08:
+        # net32's Meta gutta percha at $9.45/120 vs Schein $19.06/100.
+        name_ok = bool(crit.get("name_match"))
+        if not name_ok and _COMMODITY_RE.search(item.description or ""):
+            name_ok = bool(re.search(r"\bsimilar\b", c.notes or "", re.I))
+        if name_ok:
             c.is_generic_equivalent = True
+            if pc is False:
+                c.notes = ((c.notes + " · ") if c.notes else "") + (
+                    f"GENERIC in a {c.pack_qty}-pack for the ordered {item.pack_qty}; "
+                    f"compare per piece")
 
     # DETERMINISTIC MPN CONFIRMATION: the order's MPN appearing in a candidate's
     # URL or product name is definitive product identity — the SAME MPN is the
@@ -1589,6 +1692,11 @@ def remember_good_sources(item, candidates) -> int:
         if getattr(c, "marketplace", None):
             continue                       # 🅐/🅦 rows have their own sweep
         if c.price is None or not price_sane(item, c):
+            continue
+        # never remember a URL the URL rules reject (category/pagination pages,
+        # login pages, redirect wrappers): a reliabledental catalogue page was
+        # certified EXACT once, stored as "proven", and replayed every run after
+        if not search.usable(c.url):
             continue
         if (getattr(c, "out_of_stock", False)
                 or getattr(c, "price_unreliable", False)

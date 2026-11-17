@@ -1,0 +1,9 @@
+# Product-name aliases: Schein's wording | what the market calls it.
+# Added as an extra discovery query when it changes the text. Whole-word, case-insensitive.
+# Client-maintained. One alias per line; '#' starts a comment.
+#
+# Kerr sells "OptiBond XTR"; Schein lists it as "OptiBond eXTRa Universal" — the
+# literal query never found Frontier's XTR page (client QA 2026-10-08).
+eXTRa | XTR
+# PDF text extraction keeps the "ﬁ" ligature ("Reﬁll"), which no search engine indexes.
+Reﬁll | Refill

@@ -60,6 +60,7 @@ _fc_state = {
     "skipped": 0,
     "credits": 0,
     "rate_limited": 0,
+    "items_remaining": 0,     # set by the pipeline per item; drives fair-share paid cap
 }
 _fc_lock = threading.Lock()
 
@@ -187,6 +188,7 @@ def reset_firecrawl_budget():
         _fc_state["scrapes"] = 0
         _fc_state["skipped"] = 0
         _fc_state["credits"] = 0
+        _fc_state["items_remaining"] = 0
         _fc_key_state["idx"] = 0
     FIRECRAWL_KEY = _FIRECRAWL_KEYS[0] if _FIRECRAWL_KEYS else ""
     _gp_state["disabled"] = False
@@ -240,6 +242,54 @@ def firecrawl_log_run_summary(order_ref: str | None = None) -> None:
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", Path(__file__).resolve().parent.parent / "config"))
 
 PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)")
+# A product page that rendered its chrome but not its body: no LABELLED price and
+# no buy-box affordance. A nav promo ("as low as $1.21") is a $ token, not a price.
+# Frontier's Cling2 25 mL page came back this way (27k chars, no "Our Price", no
+# "Add to Cart"), was cached, and was then served as a HIT on every later run —
+# so no retry could ever reach it. Such a render is never stored and never served.
+_LABELLED_PRICE_RE = re.compile(
+    r"(?i)(?:our\s+price|list\s+price|your\s+price|price\s*:|each)\s*:?\s*\$\s?\d[\d,]*\.\d{2}"
+    r"|\$\s?\d[\d,]*\.\d{2}\s*\*{0,2}\s*/\s?ea\b")
+_BUYBOX_RE = re.compile(r"(?i)add\s+to\s+(?:cart|bag|basket)|buy\s+now")
+
+
+_PRODUCT_STOP = {"each", "with", "pack", "size", "kit", "box", "and", "for", "the", "per"}
+
+
+def _product_tokens(desc: str) -> set:
+    """Distinctive words of the ordered description ("Cling2", "Pressure",
+    "Indicator") — what a page must mention next to a price for that price to be
+    THIS product's."""
+    return {t for t in re.findall(r"[a-z0-9]{3,}", (desc or "").lower()) if t not in _PRODUCT_STOP}
+
+
+def _price_near_product(markdown: str, m, desc: str, before: int = 700) -> bool:
+    toks = _product_tokens(desc)
+    if not toks:
+        return True                         # nothing to test against
+    win = markdown[max(0, m.start() - before): m.start()].lower()
+    return any(t in win for t in toks)
+
+
+def _is_shell_render(url: str, markdown: str, desc: str = None) -> bool:
+    """True for a regional-storefront product page that did NOT render its own
+    buy box. Two shapes seen on Frontier (recheck 2026-11-18): the bare shell
+    (nav only — no price, no "Add to Cart") and the PROMO CAROUSEL served under the
+    product URL (dozens of other products, each with its own "Add to Cart", the
+    ordered product nowhere near any of them). "Add to Cart present" therefore
+    proves nothing; with the order description known, a price counts only when the
+    ordered product's own words precede it."""
+    if not markdown:
+        return False
+    host = _domain(url)
+    if not any(host == d or host.endswith("." + d) for d in REGION_PATH_DOMAINS):
+        return False
+    if not _LABELLED_PRICE_RE.search(markdown) and not _BUYBOX_RE.search(markdown):
+        return True                         # bare shell
+    if desc:
+        return not any(_price_near_product(markdown, m, desc)
+                       for m in PRICE_RE.finditer(markdown))
+    return False
 
 # Sections that list DIFFERENT products (cross-sell / recommendations). Their
 # prices are a major source of wrong extractions — the model grabs a related
@@ -1001,6 +1051,42 @@ def strip_generic_modifiers(q: str) -> str:
     return out if len(out) >= 6 else q
 
 
+def load_product_aliases() -> list:
+    """Names the market uses for a product that Schein spells differently.
+
+    Kerr sells "OptiBond XTR"; Schein's line reads "OptiBond eXTRa Universal".
+    The literal query never surfaced the only Frontier page selling it, and the
+    item was reported against a dearer source (client QA 2026-10-08). One line
+    per alias, 'schein wording | market wording', matched as a whole word,
+    case-insensitively. Client-maintained, like generic_modifiers.txt."""
+    f = CONFIG_DIR / "product_aliases.txt"
+    out = []
+    if not f.exists():
+        return out
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if "|" not in line:
+            continue
+        a, b = (x.strip() for x in line.split("|", 1))
+        if a and b and a.lower() != b.lower():
+            out.append((a, b))
+    return sorted(out, key=lambda t: len(t[0]), reverse=True)
+
+
+PRODUCT_ALIASES = load_product_aliases()
+
+
+def apply_product_aliases(q: str) -> str:
+    """Rewrite Schein wording to the market's; unchanged when no alias applies."""
+    if not q or not PRODUCT_ALIASES:
+        return q
+    out = q
+    for a, b in PRODUCT_ALIASES:
+        out = re.sub(rf"\b{re.escape(a)}\b", b, out, flags=re.I)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out if len(out) >= 6 else q
+
+
 SEED_URLS = load_seed_urls()
 
 # Proven-source replay (see the injection site in market_sweep). Loaded once per
@@ -1148,9 +1234,19 @@ def force_us_storefront(url: str) -> str:
             return urlunparse(p._replace(netloc=INTL_SUBDOMAIN_RE.sub("", p.netloc)))
         if not any(host == d or host.endswith("." + d) for d in REGION_PATH_DOMAINS):
             return url
+        # ORIGIN HOST (QA 2026-10-08): discovery surfaced the correct Cling2 25 mL
+        # page on prod-dental-live.frontierdental.com — the site's origin server,
+        # which renders a Canadian-locale page with no buy box at all (65k chars,
+        # no "Our Price"). Same catalogue, no price. Any non-www host on a regional
+        # storefront domain is folded to www so the page that shows prices is the
+        # one we read.
+        for d in REGION_PATH_DOMAINS:
+            if host.endswith("." + d) and host != "www." + d:
+                p = p._replace(netloc="www." + d)
+                break
         m = REGION_PATH_RE.match(p.path or "")
-        if not m or m.group(1).lower() == "us":
-            return url
+        if not m or (m.group(1).lower() == "us" and m.group(2).lower() == "en"):
+            return urlunparse(p)           # keeps a host fold above; /us/fr/ still rewrites below
         return urlunparse(p._replace(
             path=REGION_PATH_RE.sub("/us/en/", p.path, count=1)))
     except Exception:
@@ -1193,6 +1289,17 @@ def is_category_url(url: str) -> bool:
     # net32: product detail slugs end in -d-<id>; -t-/-l- slugs are taxonomy
     if d.endswith("net32.com") and not re.search(r"-d-\d", path):
         return True
+    # PAGINATION (QA 2026-10-08): reliabledental's "...Needles-Syringes-insulin.asp
+    # ?page=20" — a catalogue page titled "Dental and Medical Needles and
+    # Syringes" — was certified EXACT (98%) for a syringe order because nothing
+    # here treats "?page=N" as what it is. A paginated URL with no product-detail
+    # signal in its path or query is a listing. Product paths and variant/sku
+    # queries keep their exemption ("/product/x?variant=5&page=1" stays usable).
+    _q = (parsed.query or "").lower()
+    if (re.search(r"(?:^|[?&])page=\d{1,3}(?:&|$)", _q)
+            and not re.search(r"(?:^|&)(?:variant|sku|id|pid|product_id|item)=", _q)
+            and not re.search(r"/(?:product|products|item|items|p|dp|itm|ec)/|-d-\d|/pd/", path.lower())):
+        return True
     if CATEGORY_PATH_RE.search(path):
         q = (urlparse(url).query or "").lower()
         pl = path.lower()
@@ -1221,6 +1328,13 @@ def is_category_url(url: str) -> bool:
 
 
 _BAD_URL_RE = re.compile(r"/goto\?|/redirect\?|[?&]url=", re.I)
+# Auth pages reached discovery and were scraped as if they sold the product:
+# frontierdental.com/us/en/login?action=create_user was the "Frontier" row for an
+# NX3 order (QA 2026-08-27) and consumed a paid scrape to learn it was a login
+# form. A URL whose path IS the login/register/account page is never a listing.
+_AUTH_URL_RE = re.compile(
+    r"/(?:log-?in|sign-?in|sign-?up|register|create[-_]?account|my-?account|"
+    r"account/(?:login|register))(?:[/?#]|$)|[?&]action=create_user", re.I)
 # Domains that are clearly not dental suppliers (appeared as junk candidates):
 # generic marketplaces, churches, unrelated retailers. Snippet prices from these
 # are noise (vintage jars, etc.). Extend as needed via config later.
@@ -1235,6 +1349,8 @@ def usable(url: str) -> bool:
         return False
     if _BAD_URL_RE.search(url):
         return False                       # /goto redirect / tracking wrapper, not a product page
+    if _AUTH_URL_RE.search(url):
+        return False                       # login / register / account page, not a listing
     d = _domain(url)
     if any(d == o or d.endswith("." + o) for o in _OFFTOPIC_DOMAINS):
         return False                       # clearly non-dental-supplier domain
@@ -1459,7 +1575,8 @@ def _item_queries(item: OrderLineItem) -> List[str]:
     for q in (base,
               getattr(item, "generic_query", None),
               getattr(item, "mpn_query", None),
-              strip_generic_modifiers(base)):
+              strip_generic_modifiers(base),
+              apply_product_aliases(base)):
         q = (q or "").strip()
         if q and q.lower() not in (x.lower() for x in queries):
             queries.append(q)
@@ -1591,7 +1708,9 @@ def _shortlist(cands: List[PriceCandidate], max_candidates: int) -> List[PriceCa
     # crowd out the curated correct one before it is ever scraped — the Oral-B
     # crazydentalprices case: $6.20 Healthy Gums + $11.25 trial buried the seeded
     # $44.99 Pro-Health). Seeds lead the shortlist and never count against the cap.
-    seeds = [c for c in cands if getattr(c, "_seed", False)]
+    # operator seeds AND remembered sources keep their slot (breadth); only
+    # _seed carries match privileges — see the replay injection in market_sweep
+    seeds = [c for c in cands if getattr(c, "_seed", False) or getattr(c, "_replayed", False)]
     seed_urls = {c.url for c in seeds}
     by_dom: dict[str, int] = {}
     capped: List[PriceCandidate] = []
@@ -2183,12 +2302,21 @@ def market_sweep(item: OrderLineItem, max_candidates: int = 14) -> tuple[List[Pr
     if _mem:
         log.info("SKU %s — price memory: replaying %d proven source(s)",
                  item.schein_sku, len(_mem))
+    _true_seeds = {canonical_url(u) for u in SEED_URLS.get(item.schein_sku, [])}
     for su in _seeds:
         cu = canonical_url(su)
-        if cu not in seen and not is_excluded(cu) and not DOC_EXT_RE.search(cu):
+        # usable() carries every URL rule (category/pagination, login pages, redirect
+        # wrappers, off-topic domains). QA 2026-10-08: a reliabledental catalogue page
+        # ("...insulin.asp?page=20") was certified EXACT once, written to price
+        # memory as a proven source, then REPLAYED past all of those rules — and
+        # re-certified itself on the next run. Memory is a hint, not an assertion.
+        if cu not in seen and usable(cu):
             seen.add(cu)
             pc = PriceCandidate(title="", url=cu, source_site=_domain(cu), price=None)
-            pc._seed = True   # known-good: exempt from the ≤2-per-domain shortlist cap
+            if cu in _true_seeds:
+                pc._seed = True        # operator-asserted in seed_urls.txt: full privileges
+            else:
+                pc._replayed = True    # remembered from a past run: breadth only, no privileges
             cands.append(pc)
     if _seeds:
         log.info("SKU %s — seeded %d known-good URL(s) from seed_urls.txt",
@@ -2996,7 +3124,8 @@ def free_fetch_structured(c: PriceCandidate, tag: str = "") -> bool:
     if SCRAPE_CACHE_ENABLED:
         try:
             from . import db
-            db.save_scrape(c.url, cache_text[:int(os.environ.get("SCRAPE_CACHE_MD_CAP", "150000"))])
+            if not _is_shell_render(c.url, cache_text, getattr(c, "_order_desc", None)):
+                db.save_scrape(c.url, cache_text[:int(os.environ.get("SCRAPE_CACHE_MD_CAP", "150000"))])
         except Exception:
             pass
     log.info("%sFREE FETCH (0 credits) — structured $%.2f from %s", tag, c.price or sp or 0.0, c.url[:60])
@@ -3028,6 +3157,13 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
                    else SCRAPE_CACHE_HOURS)
             cached_md = db.get_cached_scrape(c.url, ttl) if ttl > 0 else None
         except Exception:
+            cached_md = None
+        if cached_md and _is_shell_render(c.url, _split_sname(_split_sprice(_split_vmatrix(cached_md)[1])[1])[1],
+                                          getattr(c, "_order_desc", None)):
+            # a cached shell-only render (chrome, no body) must not be served as a
+            # hit — drop it and take the fresh-fetch path, which can re-render
+            log.info("%sscrape: cached page is a shell-only render (%d chars) — ignoring "
+                     "the cache and fetching fresh: %s", tag, len(cached_md), c.url[:80])
             cached_md = None
         if cached_md:
             # A cached variant-matrix page carries its {sku:price} marker on the
@@ -3131,7 +3267,9 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         # their prices hourly — for those, force a LIVE fetch (maxAge=0), else
         # Firecrawl returns a days-old snapshot and we report stale prices even
         # after purging our OWN cache ($203.85 when net32 live shows $196.28).
-        _fresh = _aggregator_domain(c.url) or _fresh_price_domain(c.url)
+        _regional = any(_domain(c.url) == d or _domain(c.url).endswith("." + d)
+                        for d in REGION_PATH_DOMAINS)
+        _fresh = _aggregator_domain(c.url) or _fresh_price_domain(c.url) or _regional
         _max_age = 0 if _fresh else int(
             os.environ.get("FIRECRAWL_MAX_AGE_MS", str(7 * 24 * 60 * 60 * 1000)))
         # Amazon/Walmart/eBay serve a bot-detection JS shell ("No product info",
@@ -3177,6 +3315,38 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         r.raise_for_status()
         payload = r.json().get("data", {})
         markdown = payload.get("markdown") or ""
+        # SHELL-ONLY RENDER (QA 2026-10-08): Frontier's Cling2 25 mL page — the
+        # correct product — came back as 27k chars of header/nav with no price, no
+        # "Add to Cart", not even the product name, and was recorded as login-gated.
+        # A storefront page with neither a price token nor a buy-box affordance did
+        # not finish rendering. Re-render ONCE through the stealth proxy with a
+        # longer wait (bounded: one extra paid scrape, product pages on regional
+        # storefronts only) before concluding the page shows no price.
+        # a nav promo like "products as low as $1.21" is a $ token, not a price —
+        # only a LABELLED price or a buy-box affordance proves the body rendered
+        _LABELLED = (r"(?i)(?:our\s+price|list\s+price|your\s+price|price\s*:|each)\s*:?\s*\$\s?\d[\d,]*\.\d{2}"
+                     r"|\$\s?\d[\d,]*\.\d{2}\s*\*{0,2}\s*/\s?ea\b")      # "$42.10/ea" suffix form
+        _BUYBOX = r"(?i)add\s+to\s+(?:cart|bag|basket)|buy\s+now"
+        if (_regional and not _stealth and markdown
+                and _is_shell_render(c.url, markdown, getattr(c, "_order_desc", None))
+                and os.environ.get("SHELL_RERENDER", "1") not in ("0", "false", "False")):
+            log.info("%sscrape: shell-only render (%d chars, no price/buy box) — one stealth "
+                     "re-render for %s", tag, len(markdown), c.url[:80])
+            _body.update({"proxy": "stealth", "waitFor": 8000, "maxAge": 0})
+            try:
+                with _fc_lock:
+                    _fc_state["scrapes"] += 1          # it is a second paid scrape
+                r2 = _do_post(); r2.raise_for_status()
+                p2 = r2.json().get("data", {}); md2 = p2.get("markdown") or ""
+                if len(md2) > 400 and not _is_shell_render(c.url, md2, getattr(c, "_order_desc", None)):
+                    payload, markdown = p2, md2
+                    c.notes = ((c.notes + " · ") if c.notes else "") + (
+                        "re-rendered via stealth proxy after a shell-only first fetch")
+                else:
+                    c.notes = ((c.notes + " · ") if c.notes else "") + (
+                        "shell-only render persisted after a stealth re-render")
+            except Exception as _e:
+                log.warning("%sscrape: stealth re-render failed for %s: %s", tag, c.url[:70], _e)
         # Structured-data price: read JSON-LD / og-meta from the raw HTML so a
         # nav-bloated store page (BigCommerce/Shopify whose price sits below a
         # huge category menu, beyond the markdown cap) still yields its price.
@@ -3287,10 +3457,22 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         c.rejected_reason = "price gated behind login (login-to-see-price)"
         return c
     if (login_phrase or login_words) and not main_prices and not is_aggregator:
-        # gated AND no public price anywhere in the main content → reject
-        log.warning("%sscrape: login wall (no public price shown) at %s", tag, c.url[:80])
-        c.match_type = "rejected"
-        c.rejected_reason = "login required for pricing (public pricing only)"
+        # gated AND no public price anywhere in the main content → reject.
+        # But SAY which it was (QA 2026-10-08): Frontier's Cling2 page came back
+        # as 27k chars of nav shell — no buy box, no "Add to Cart", no login
+        # wording at all — and was recorded as "login required". A page with a
+        # "Login" link in its header and no product body is an incomplete render,
+        # not a login wall; the two call for different follow-ups.
+        _buybox = bool(re.search(r"(?i)add\s+to\s+(?:cart|bag|basket)|buy\s+now|our\s+price|list\s+price", main))
+        if login_phrase or _buybox:
+            log.warning("%sscrape: login wall (no public price shown) at %s", tag, c.url[:80])
+            c.match_type = "rejected"
+            c.rejected_reason = "login required for pricing (public pricing only)"
+        else:
+            log.warning("%sscrape: no buy box rendered (no price, no add-to-cart) at %s", tag, c.url[:80])
+            c.match_type = "rejected"
+            c.rejected_reason = ("no price visible — page rendered without its buy box "
+                                 "(not a login wall); likely an incomplete render, verify on the page")
         return c
     if login_phrase and main_prices:
         # public price present alongside a "log in for your price" upsell — keep
@@ -3326,10 +3508,21 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
     # oversize guard exists to drop CATEGORY pages, so it must not fire here.
     if getattr(c, "marketplace", None):
         OVERSIZE = max(OVERSIZE, 600000)
+    # Aggregator PDPs are the same case (QA 2026-10-08): net32's /ec/...-d-NNNNN
+    # and supplyclinic's /items/... URL shapes ARE product pages, and they run
+    # large — a seller table plus a "Similar items" sidebar. Kerr gutta percha
+    # came back at 158,008 chars and was thrown away as a "category listing" 5%
+    # over the line, then recorded as "price None failed sanity" — the client's
+    # Net32 match for three items on one order died exactly here. The aggregator
+    # lock prices these deterministically from the seller table, and MD_CAP
+    # already bounds what is stored, so size is not evidence of anything.
+    if _aggregator_domain(c.url):
+        OVERSIZE = max(OVERSIZE, 600000)
     if len(markdown) > OVERSIZE:
         log.info("%soversized page (%d chars) — almost certainly a category/search "
                  "listing, not a product page; skipping extraction", tag, len(markdown))
-        c.notes = "skipped — page too large to be a product listing (category/search page)"
+        c.notes = (f"skipped — page is {len(markdown):,} chars, treated as a category/"
+                   f"search listing rather than a product page (SCRAPE_OVERSIZE_REJECT)")
         return c
     # eBay's main-content markdown is mostly payment/shipping boilerplate — the
     # product title and condition live in the page's structured data / metadata.
@@ -3355,7 +3548,8 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         if SCRAPE_CACHE_ENABLED:
             try:
                 from . import db
-                db.save_scrape(c.url, main[:int(os.environ.get("SCRAPE_CACHE_MD_CAP", "150000"))])
+                if not _is_shell_render(c.url, main, getattr(c, "_order_desc", None)):
+                    db.save_scrape(c.url, main[:int(os.environ.get("SCRAPE_CACHE_MD_CAP", "150000"))])
             except Exception:
                 pass
         return c
@@ -3381,7 +3575,8 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
                 prefix = _sprice_marker(c.price) + "\n"
             if getattr(c, "structured_name", None):
                 prefix += _sname_marker(c.structured_name) + "\n"
-            db.save_scrape(c.url, (prefix + main)[:cache_cap])
+            if not _is_shell_render(c.url, main, getattr(c, "_order_desc", None)):
+                db.save_scrape(c.url, (prefix + main)[:cache_cap])
         except Exception:
             pass
     log.info("%sscrape SUCCESS (markdown, stored %d of %d chars) — %s",
