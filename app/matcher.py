@@ -1193,7 +1193,9 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
     _gen_tol = float(_os.environ.get("EQUIV_PACK_TOLERANCE", "2.0"))
     for c in verified:
         crit = c.criteria or {}
-        if not (item.brand and crit.get("size_form_match") and not crit.get("brand_match")):
+        # the order line need not carry a brand: Schein's "Diamond FG Fine 833F-023"
+        # has none, and Ace's Jota bur with the same code is exactly its generic
+        if not (crit.get("size_form_match") and not crit.get("brand_match")):
             continue
         # pack: exact, or a modest difference (120 for an ordered 100), or unstated
         pc = pack_compatible(item, c)
@@ -1258,7 +1260,16 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                 and not (c.criteria or {}).get("name_match") and _likely_exact(item, c)):
             crit = dict(c.criteria or {})
             crit["name_match"] = True
+            # The model judged size/pack on a page it could not read ("no pricing
+            # information found") and answered False; the seller table and token
+            # overlap say this IS the product. A False the page never supported
+            # becomes UNVERIFIED — unless a deterministic check actually contradicts.
+            if crit.get("size_form_match") is False and volume_compatible(item, c) is not False:
+                crit["size_form_match"] = None
+            if crit.get("pack_match") is False and pack_compatible(item, c) is not False:
+                crit["pack_match"] = None
             c.criteria = crit
+            c.token_confirmed = True
             if c.match_type == "rejected":
                 # a confirmed identity overrides the model's rejection (sweep 2026-11-18:
                 # the ordered MPN was in the URL and the row stayed "rejected" → dropped)

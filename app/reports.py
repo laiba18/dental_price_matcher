@@ -368,8 +368,10 @@ def _pricematch_eligible(item, c: PriceCandidate) -> bool:
     labeled). Anything failing this goes to the alternate sheet instead.
     EXCEPTION: a larger pack at a lower total price (_bulk_benefit) is allowed."""
     crit = c.criteria or {}
-    if c.price is None or c.scraped_product_name is None:
-        return False
+    _confirmed = (getattr(c, "price_locked", False) or getattr(c, "mpn_confirmed", False)
+                  or getattr(c, "token_confirmed", False))
+    if c.price is None or (c.scraped_product_name is None and not _confirmed):
+        return False                 # a locked / confirmed row needs no model-echoed name
     # an unverified / page-unconfirmed price is never negotiation-grade EXACT:
     # it still appears as an option (with its ⚠ flag), but must not be presented
     # to the Schein rep as a confirmed four-criteria match.
@@ -398,6 +400,11 @@ def _pricematch_eligible(item, c: PriceCandidate) -> bool:
     # MPN match = identical product → price-match grade, overriding the free model's
     # unreliable name/size/pack criteria on aggregator-locked pages.
     if getattr(c, "mpn_confirmed", False):
+        return True
+    # a seller-table-locked row whose identity was token-confirmed (Net32 ParaPost
+    # $41.69, 14 sellers, badge match) — pack unreadable is "not verified", not "no"
+    if getattr(c, "token_confirmed", False) and pack_compatible(item, c) is not False \
+            and crit.get("size_form_match") is not False:
         return True
     # variant must be confirmed (Q2: unverified variants are NOT price_match grade
     # under the strict rule — they drop to alternate)
