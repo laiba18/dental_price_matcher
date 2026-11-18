@@ -302,6 +302,8 @@ def _score_label(item, c: PriceCandidate) -> str:
         return f"EXACT ({score}%)"
     if c.match_type in ("exact", "approximate"):
         return f"APPROXIMATE ({score}%)"
+    if c.match_type == "rejected" and (c.rejected_reason or ""):
+        return f"REJECTED — {str(c.rejected_reason)[:48]}"
     return f"POSSIBLE ({score}%)"
 
 
@@ -462,7 +464,8 @@ def _poolable(item, c: PriceCandidate) -> bool:
     return (c.price is not None
             and floor <= c.price <= 3.0 * unit
             and (not savings_only or c.price < unit)       # must BEAT Schein — no-saving rows → alternate
-            and c.scraped_product_name is not None
+            and (c.scraped_product_name is not None
+                 or getattr(c, "price_locked", False) or getattr(c, "mpn_confirmed", False))
             and not _is_gated(c)
             and not getattr(c, "out_of_stock", False)      # OOS → alternate sheet, never a price-match option
             and not getattr(c, "variant_conflict", False)  # wrong color/shade/size/flavor → alternate, never price-match
@@ -503,6 +506,10 @@ def _poolable(item, c: PriceCandidate) -> bool:
             # has reached the client with the wrong size; the equivalents block has
             # refused size_form_match=False since September — options now do too.
             and (c.criteria or {}).get("size_form_match") is not False
+            # ...and an EXPLICIT product-name mismatch is a different product too: dentaplex24's
+            # FG 56 headlined an FG 556 order, Benco's Luxatemp Ultra a Fluorescence order,
+            # Crazy Dental's Light Body an XLight order — each with a claimed saving.
+            and (c.criteria or {}).get("name_match") is not False
             and "page not found" not in (c.rejected_reason or "").lower())
 
 
@@ -626,6 +633,8 @@ def _find_equivalents(item, candidates, shown_urls: set,
     for c in candidates:
         if c.url in shown_urls:
             continue
+        if c.match_type == "rejected":
+            continue                    # a rejected row is not an "equivalent" of itself
         if c.price is None or c.price >= item.unit_price:
             continue
         if getattr(c, "out_of_stock", False):

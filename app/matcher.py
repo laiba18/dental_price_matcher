@@ -279,7 +279,7 @@ _HOUSE_BRANDS = ("criterion", "acclean", "maxima")
 # within the same family ("Microbrush X" vs "Microbrush Plus", "OptiBond FL"
 # vs "OptiBond Solo Plus").  Fire only when BOTH sides carry a suffix.
 _MODEL_SUFFIXES = (
-    "plus", "ultra", "pro", "max", "mini", "lite", "nano",
+    "plus", "ultra", "pro", "max", "mini", "lite", "nano", "fluorescence",
     "premier", "select", "classic", "solo", "dual",
     "extra", "xtra", "xt", "xl", "xs",
     # PACK-TIER names. A manufacturer sells the same material as an Economy pack,
@@ -1135,6 +1135,17 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                         f"COLOR NOTE — {vm}; seeded as a match (same product, "
                         f"different color) — verify color is acceptable")
                     continue
+                if (vm.lower().startswith("house-brand mismatch")
+                        and (c.criteria or {}).get("size_form_match")
+                        and pack_compatible(item, c) is not False):
+                    # Acclean/Criterion/Maxima are sold by no one else: a page of another
+                    # brand that matches on name, size and pack IS the generic the client
+                    # wants (Crazy Dental Perfect Choice $162.45 for Acclean $227.51), not a
+                    # wrong variant. Tag it; the equivalents block applies its own guards.
+                    c.is_generic_equivalent = True
+                    c.notes = ((c.notes + " · ") if c.notes else "") + (
+                        f"GENERIC for a house-brand order — {vm}; verify clinical equivalence")
+                    continue
                 c.variant_unverified = True
                 c.variant_conflict = True   # wrong color/shade/size/flavor/brand → keep out of price_match
                 if c.match_type == "exact":
@@ -1219,11 +1230,20 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                 hay = re.sub(r"[^a-z0-9]", "", (
                     (c.url or "") + " " + (getattr(c, "scraped_product_name", "") or "")
                     + " " + (c.title or "")).lower())
-                if _mnorm in hay and not getattr(c, "variant_conflict", False):
+                _shank = re.search(r"\b(fg|ra|hp)\b", (item.description or "").lower())
+                _hay2 = hay.replace(_shank.group(1), "", 1) if _shank else hay
+                if (_mnorm in hay or _mnorm in _hay2) and not getattr(c, "variant_conflict", False):
                     c.mpn_confirmed = True
                     crit = dict(c.criteria or {})
                     crit["name_match"] = True
                     c.criteria = crit
+                    if c.match_type == "rejected":
+                        # a confirmed identity overrides the model's rejection (sweep 2026-11-18:
+                        # the ordered MPN was in the URL and the row stayed "rejected" → dropped)
+                        c.match_type = "exact" if (crit.get("size_form_match") is not False
+                                                   and crit.get("pack_match") is not False) else "approximate"
+                        c.rejected_reason = None
+                        c.notes = ((c.notes + " · ") if c.notes else "") + "model rejection overridden by confirmed identity"
                     log.info("SKU %s — %s MPN-confirmed (%s in listing) → price_match-eligible",
                              sku, c.source_site, item.mpn)
 
@@ -1239,6 +1259,13 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
             crit = dict(c.criteria or {})
             crit["name_match"] = True
             c.criteria = crit
+            if c.match_type == "rejected":
+                # a confirmed identity overrides the model's rejection (sweep 2026-11-18:
+                # the ordered MPN was in the URL and the row stayed "rejected" → dropped)
+                c.match_type = "exact" if (crit.get("size_form_match") is not False
+                                   and crit.get("pack_match") is not False) else "approximate"
+                c.rejected_reason = None
+                c.notes = ((c.notes + " · ") if c.notes else "") + "model rejection overridden by confirmed identity"
             log.info("SKU %s — %s locked-price token-confirmed → price_match-eligible",
                      sku, c.source_site)
 

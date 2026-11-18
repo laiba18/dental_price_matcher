@@ -515,6 +515,8 @@ def _aggregator_domain(url: str) -> Optional[str]:
 # sane cap, while a FRESH render of the same URL is 28k with the price at ~24k.
 # Served stale, the model reads the banner prices ("Saliva Ejector", "$0.45
 # Disposable gown") and rejects the page as a different product.
+PRIORITY_SITE_DOMAINS = [d.strip().lower() for d in os.environ.get(
+    "PRIORITY_SITE_DOMAINS", "net32.com,supplyclinic.com,frontierdental.com").split(",") if d.strip()]
 FRESH_PRICE_DOMAINS = {d.strip().lower() for d in os.environ.get(
     "FRESH_PRICE_DOMAINS",
     "crazydentalprices.com,frontierdental.com").split(",") if d.strip()}
@@ -1185,7 +1187,12 @@ def flush_discovery_cache(conn) -> None:
     try:
         from . import db
         for sku, urls in _disc_new.items():
-            db.save_discovery(conn, sku, urls)
+            try:
+                old = db.get_cached_discovery(conn, sku, 3650) or []
+            except Exception:
+                old = []
+            merged = list(dict.fromkeys(list(urls) + [u for u in old if u not in urls]))[:60]
+            db.save_discovery(conn, sku, merged)
         log.info("Discovery cache: persisted %d SKU(s) for future runs", len(_disc_new))
     except Exception as e:
         log.debug("discovery cache flush skipped: %s", e)
@@ -2424,6 +2431,12 @@ def market_sweep(item: OrderLineItem, max_candidates: int = 14) -> tuple[List[Pr
     # STILL-MISSING suppliers (SerpAPI's separate credit pool), so those suppliers
     # are still found. Skipped entirely when Firecrawl handled the gap (no double
     # spend) or SerpAPI is itself unavailable.
+    if PRIORITY_SITE_DOMAINS and SERPAPI_KEY and not _serp_state["exhausted"]:
+        _have = {_domain(c.url) for c in cands}
+        _prio = [s for s in PRIORITY_SITE_DOMAINS if not any(h == s or h.endswith("." + s) for h in _have)]
+        if _prio:
+            log.info("SKU %s — priority-supplier site search for %s", item.schein_sku, ",".join(_prio))
+            _supplier_site_sweep(item, cands, seen, domains=_prio)
     if (_fc_state["exhausted"] or not FIRECRAWL_KEY) and SERPAPI_KEY and not _serp_state["exhausted"]:
         present = set()
         for c in cands:
@@ -3430,6 +3443,11 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
         c.notes = "scrape returned empty content"
         return c
     main = _strip_cross_sell(markdown)
+    if re.search(r"(?i)product currently not sold|no longer (?:available|sold)|has been discontinued", main[:1500]):
+        c.out_of_stock = True
+        c.match_type = "rejected"
+        c.rejected_reason = "no longer sold at this supplier (listing marked not sold / discontinued)"
+        return c
     main_prices = PRICE_RE.findall(main)        # real "$<number>" tokens in main content
     low_main = main.lower()
     login_phrase = bool(_LOGIN_PRICE_RE.search(main))   # "log in to see price" etc.
@@ -3518,6 +3536,8 @@ def firecrawl_verify(c: PriceCandidate, sku: str = "", allow_paid: bool = True) 
     # already bounds what is stored, so size is not evidence of anything.
     if _aggregator_domain(c.url):
         OVERSIZE = max(OVERSIZE, 600000)
+    if _looks_supplier(_domain(c.url)) and not is_category_url(c.url):
+        OVERSIZE = max(OVERSIZE, 600000)   # orthazone PDPs run 300–450k; MD_CAP bounds what is kept
     if len(markdown) > OVERSIZE:
         log.info("%soversized page (%d chars) — almost certainly a category/search "
                  "listing, not a product page; skipping extraction", tag, len(markdown))

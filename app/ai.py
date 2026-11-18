@@ -1481,7 +1481,10 @@ def _apply_ev_result(item, c, d):
             c.notes = ((c.notes + " · ") if c.notes else "") + (
                 f"login-pricing flag overridden — page labels a public price "
                 f"(${min(_lab):,.2f}) and never hides it behind a login; confirm on the page")
-    c.scraped_product_name = d.get("product_name") or c.title
+    _h1 = re.search(r"(?m)^#\s+(.{6,160})$", getattr(c, "scraped_markdown", None) or "")
+    c.scraped_product_name = (d.get("product_name") or c.title
+                              or (_h1.group(1).strip() if _h1 else None)
+                              or getattr(c, "structured_name", None))
     c.scraped_variant = d.get("variant")
     ov = (getattr(c, "_ordered_variant", "") or item.variant or "").strip().lower()
     if ov:
