@@ -1239,6 +1239,13 @@ def process_item(item: OrderLineItem, max_verify: int = 8) -> ItemResult:
                     crit = dict(c.criteria or {})
                     crit["name_match"] = True
                     c.criteria = crit
+                    # generic tagging ran BEFORE this confirmation, when the model's
+                    # name_match was still False — so a different-brand page carrying
+                    # the ordered code (Ace's Jota 833F.FG.023 for Schein's 833F-023)
+                    # was never tagged. Tag it now: same code, size and pack, other brand.
+                    if (not crit.get("brand_match") and crit.get("size_form_match")
+                            and pack_compatible(item, c) is not False):
+                        c.is_generic_equivalent = True
                     if c.match_type == "rejected":
                         # a confirmed identity overrides the model's rejection (sweep 2026-11-18:
                         # the ordered MPN was in the URL and the row stayed "rejected" → dropped)
