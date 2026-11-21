@@ -69,6 +69,7 @@ class PriceCandidate(BaseModel):
     variant_conflict: bool = False       # page CONFLICTS with ordered variant (wrong color/shade/size/flavor) — hard-exclude from price_match, route to alternate
     pack_conflict: bool = False          # page sells a DIFFERENT pack size than ordered (10-count vs a 300/Bx order) — price not comparable, hard-exclude from price_match, route to alternate
     mpn_confirmed: bool = False          # the order's MPN appears in this candidate's URL/name — definitive same-product identity; price_match-eligible regardless of the LLM's criteria
+    token_confirmed: bool = False       # seller-table-locked row whose identity was confirmed by token overlap
     price_unreliable: bool = False        # AI price wildly diverges from listing — verify
     price_locked: bool = False            # price set deterministically (aggregator table parser); AI must not overwrite it
     is_generic_equivalent: bool = False  # same product type, different (or no) brand

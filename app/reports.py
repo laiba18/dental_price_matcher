@@ -302,6 +302,8 @@ def _score_label(item, c: PriceCandidate) -> str:
         return f"EXACT ({score}%)"
     if c.match_type in ("exact", "approximate"):
         return f"APPROXIMATE ({score}%)"
+    if c.match_type == "rejected" and (c.rejected_reason or ""):
+        return f"REJECTED — {str(c.rejected_reason)[:48]}"
     return f"POSSIBLE ({score}%)"
 
 
@@ -366,8 +368,10 @@ def _pricematch_eligible(item, c: PriceCandidate) -> bool:
     labeled). Anything failing this goes to the alternate sheet instead.
     EXCEPTION: a larger pack at a lower total price (_bulk_benefit) is allowed."""
     crit = c.criteria or {}
-    if c.price is None or c.scraped_product_name is None:
-        return False
+    _confirmed = (getattr(c, "price_locked", False) or getattr(c, "mpn_confirmed", False)
+                  or getattr(c, "token_confirmed", False))
+    if c.price is None or (c.scraped_product_name is None and not _confirmed):
+        return False                 # a locked / confirmed row needs no model-echoed name
     # an unverified / page-unconfirmed price is never negotiation-grade EXACT:
     # it still appears as an option (with its ⚠ flag), but must not be presented
     # to the Schein rep as a confirmed four-criteria match.
@@ -396,6 +400,11 @@ def _pricematch_eligible(item, c: PriceCandidate) -> bool:
     # MPN match = identical product → price-match grade, overriding the free model's
     # unreliable name/size/pack criteria on aggregator-locked pages.
     if getattr(c, "mpn_confirmed", False):
+        return True
+    # a seller-table-locked row whose identity was token-confirmed (Net32 ParaPost
+    # $41.69, 14 sellers, badge match) — pack unreadable is "not verified", not "no"
+    if getattr(c, "token_confirmed", False) and pack_compatible(item, c) is not False \
+            and crit.get("size_form_match") is not False:
         return True
     # variant must be confirmed (Q2: unverified variants are NOT price_match grade
     # under the strict rule — they drop to alternate)
@@ -462,7 +471,8 @@ def _poolable(item, c: PriceCandidate) -> bool:
     return (c.price is not None
             and floor <= c.price <= 3.0 * unit
             and (not savings_only or c.price < unit)       # must BEAT Schein — no-saving rows → alternate
-            and c.scraped_product_name is not None
+            and (c.scraped_product_name is not None
+                 or getattr(c, "price_locked", False) or getattr(c, "mpn_confirmed", False))
             and not _is_gated(c)
             and not getattr(c, "out_of_stock", False)      # OOS → alternate sheet, never a price-match option
             and not getattr(c, "variant_conflict", False)  # wrong color/shade/size/flavor → alternate, never price-match
@@ -479,6 +489,34 @@ def _poolable(item, c: PriceCandidate) -> bool:
             # wrong product (Safco G2-Bond at $68.99 for an OptiBond order).
             # Route to alternate sheet; verified matches headline instead.
             and c.match_type != "unverified"
+            # HEADLINE FLOOR (QA 2026-10-08): a surgimac listing that failed BRAND
+            # and PACK on a price we could not confirm headlined a $488.66 item as
+            # Option 1 — nothing better existed, so the worst row led. A different
+            # brand is only a price-match option when it is a confirmed GENERIC
+            # (name, size and pack all verified). Otherwise it is at most an
+            # equivalent, and the ⚡ Equivalent block decides that with its own
+            # price-floor, pack-tolerance and unreliable-price guards.
+            and not ((c.criteria or {}).get("brand_match") is False
+                     and not getattr(c, "is_generic_equivalent", False))
+            # ...and a different-brand row whose VARIANT is unverified cannot be an
+            # option either (QA 2026-10-08, Mity K-Files): Newark's generic K-file was
+            # tagged "MATERIAL NOT CONFIRMED — routed to alternate" and then headlined
+            # as GENERIC EQUIVALENT, because only variant_CONFLICT was checked here. A
+            # generic earns the headline by matching on everything we can see; a
+            # material/variant we could not see is not a match, it is a question.
+            and not ((c.criteria or {}).get("brand_match") is False
+                     and getattr(c, "variant_unverified", False))
+            # An EXPLICIT size/form mismatch is a different product, exactly like a
+            # pack or variant conflict — never an option. Recheck 2026-11-18: a 4 oz
+            # PIP pump jar headlined an 8 oz order as Option 1 "claiming" $154.43,
+            # with its own row reading "SIZE/VOLUME MISMATCH". Third time this item
+            # has reached the client with the wrong size; the equivalents block has
+            # refused size_form_match=False since September — options now do too.
+            and (c.criteria or {}).get("size_form_match") is not False
+            # ...and an EXPLICIT product-name mismatch is a different product too: dentaplex24's
+            # FG 56 headlined an FG 556 order, Benco's Luxatemp Ultra a Fluorescence order,
+            # Crazy Dental's Light Body an XLight order — each with a claimed saving.
+            and (c.criteria or {}).get("name_match") is not False
             and "page not found" not in (c.rejected_reason or "").lower())
 
 
@@ -602,6 +640,8 @@ def _find_equivalents(item, candidates, shown_urls: set,
     for c in candidates:
         if c.url in shown_urls:
             continue
+        if c.match_type == "rejected":
+            continue                    # a rejected row is not an "equivalent" of itself
         if c.price is None or c.price >= item.unit_price:
             continue
         if getattr(c, "out_of_stock", False):
@@ -706,6 +746,15 @@ def _write_equivalent_rows(ws, r: ItemResult, beat_price: Optional[float] = None
         if per_unit <= 0:
             # normalising can reveal the "cheaper" pack is dearer per piece
             norm_note += " · NO SAVING once pack sizes are matched"
+            per_unit, total = "", ""
+        elif item.pack_qty and not c.pack_qty:
+            # Sep-10 verification run: a $103.94 Newark nasal-mask "equivalent" for a
+            # 24-pack order said "pack size not confirmed on page" and still claimed
+            # $131.05 saved. Normalisation needs both packs; when the page states
+            # none the saving is unknowable — show the price, claim nothing.
+            norm_note += (f" · PACK NOT CONFIRMED on the page — the order is a "
+                          f"{item.pack_qty}-pack, so no saving is claimed until the "
+                          f"pack size is checked")
             per_unit, total = "", ""
         pack_note = ""
         if c.pack_qty is None:

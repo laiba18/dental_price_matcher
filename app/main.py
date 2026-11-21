@@ -130,6 +130,10 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
 
         def _work(n, it):
             jobs.bind_job(job_id)
+            # tell the scraper how many items still need pricing so the per-run
+            # Firecrawl budget is shared out instead of spent first-come-first-served
+            with search_mod._fc_lock:
+                search_mod._fc_state["items_remaining"] = max(1, items_total - n)
             jobs.emit("item_start", index=n + 1, total=items_total,
                       sku=it.schein_sku,
                       description=(it.description or "")[:100])
@@ -162,6 +166,22 @@ def run_pipeline(pdf_path: str | Path, parallel: Optional[int] = None,
                     log.exception("Stage 1 — SKU %s crashed; continuing", sku)
                     results_by_idx.setdefault(n, ItemResult(item=order.items[n]))
         finally:
+            # TIMEOUT GRACE (QA 2026-10-08): two of ten items hit the 300s per-item
+            # cap. The worker thread kept running and finished — its candidates
+            # were persisted — but the report had already been written from an
+            # EMPTY result, so OptiBond read "NO SUPPLIER MATCH" for work that was
+            # done seconds later. Give stragglers a bounded grace before writing,
+            # so a slow item contributes what it verified instead of nothing.
+            import time as _time
+            _grace = int(os.environ.get("ITEM_TIMEOUT_GRACE_SEC", "120"))
+            _deadline = _time.time() + _grace
+            _late = [n for n in range(len(order.items)) if n not in results_by_idx]
+            while _late and _time.time() < _deadline:
+                _time.sleep(2)
+                _late = [n for n in _late if n not in results_by_idx]
+            if _late:
+                log.warning("Stage 1 — %d item(s) still unfinished after %ss grace: %s",
+                            len(_late), _grace, [order.items[n].schein_sku for n in _late])
             ex.shutdown(wait=False)
         results = [results_by_idx.get(n) or ItemResult(item=order.items[n])
                    for n in range(len(order.items))]

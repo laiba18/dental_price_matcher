@@ -1154,7 +1154,7 @@ def extract_and_validate_batch(item, candidates: List[PriceCandidate]) -> None:
                 return (head + "\n…\n" + md[start:end])[:per_page]
             # (2) otherwise: keep the head, but if the price sits past it, stitch in
             # the block around the first price so a deep price isn't truncated away.
-            m = _PAGE_PRICE_RE.search(md)
+            m = _price_anchor_match(md, item)
             if m and m.start() > per_page - 400:
                 head = md[: per_page // 3]
                 start = max(len(head), m.start() - EXTRACT_WIN_BEFORE)
@@ -1261,6 +1261,33 @@ def extract_and_validate_batch(item, candidates: List[PriceCandidate]) -> None:
 
 
 _PAGE_PRICE_RE = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)")
+_BUYBOX_NEAR_RE = re.compile(r"(?i)add\s+to\s+(?:cart|bag|basket)|buy\s+now|\bquantity\b|\bqty\b|\bvolume\b|\bsize\b|/\s?ea\b|\beach\b")
+_PRICE_LABEL_RE = re.compile(r"(?i)(?:our|list|your|sale)\s+price\s*:?\s*$|price\s*:\s*$")
+
+
+def _price_anchor_match(md: str, item=None):
+    """The $ token the model's window should centre on: the first price that is
+    LABELLED or sits in the buy box (a buy-box marker within 450 chars after it),
+    else the first price on the page. Recheck 2026-11-18: Frontier's PIP page put a
+    "spend $300 on Aira products" banner at offset 1.9k and the real $194.36 at
+    24k — the stitch anchored on the banner, the model never saw the buy box, and
+    answered "login required, price null" for a page with a plain public price."""
+    from . import search as _search
+    desc = (getattr(item, "description", "") or "") if item is not None else ""
+    first = None
+    fallback = None
+    for m in _PAGE_PRICE_RE.finditer(md or ""):
+        first = first or m
+        if _PRICE_LABEL_RE.search(md[max(0, m.start() - 24): m.start()]) \
+                or _BUYBOX_NEAR_RE.search(md[m.end(): m.end() + 450]):
+            if not desc or _search._price_near_product(md, m, desc):
+                return m                    # labelled / buy-box price of THIS product
+            fallback = fallback or m        # a tile of some other product (carousel)
+    if desc:
+        # the ordered product is known and never appears next to a price: a tile of
+        # some other product is not an anchor — give the model the plain head
+        return None if fallback is not None else first
+    return fallback or first
 # Login-flavored rejection wording (used to spare aggregator pages that carry a
 # public price from a login-based LLM rejection — Change 1).
 _LOGIN_NOTE_RE = re.compile(r"log\s?in|login|sign\s?in|members?\b|account|register|sign[\s\-]?up", re.I)
@@ -1409,10 +1436,55 @@ def _apply_ev_result(item, c, d):
         # gets rejected when the price is truly behind a login wall.
         from . import search as _search
         if not _search._aggregator_domain(getattr(c, "url", "") or ""):
-            c.match_type = "rejected"
-            c.rejected_reason = "login required for pricing (public pricing only)"
-            return
-    c.scraped_product_name = d.get("product_name") or c.title
+            # FALSE GATE (QA 2026-10-08): the model said "login required" about a
+            # Frontier page whose body read "Our Price: $146.16" with no login
+            # wording anywhere — the flag was trusted unconditionally and the only
+            # public Frontier price for that item was thrown away. A page that
+            # LABELS a public price, and never says "log in to see the price", is
+            # not gated whatever the model thinks. Keep it, mark the price as
+            # needing confirmation, and let every normal gate still apply.
+            _md = getattr(c, "scraped_markdown", None) or ""
+            _hard = bool(_search._LOGIN_HARDGATE_RE.search(_md))
+            _lab = [float(m.group(1).replace(",", "")) for m in re.finditer(
+                r"(?i)(?:our\s+price|your\s+price|price|sale|now|/\s?ea|each)\s*[:\-]?\s*"
+                r"\$\s?(\d[\d,]*\.\d{2})", _md)]
+            # A BARE price in the buy box counts too (recheck 2026-11-18): Frontier's
+            # PIP 8 oz page shows "$194.36" with no label at all, right above the
+            # size picker and "Add to Cart", and no login wording anywhere — the model
+            # still said "login required" (it reads "free shipping with a dental
+            # license" as a gate). A $ amount within a few hundred chars of a buy-box
+            # marker is the page's price; a nav promo ("as low as $1.21") sits far
+            # from any such marker and is also floored out below.
+            # ...and the price must be THIS product's: Frontier served a Black-Friday
+            # carousel under the Cling2 URL — dozens of other products, each with
+            # "Add to Cart" — and the first tile's $19.99 (a barrier film) was taken
+            # for a $197 cement. The ordered product's own words must precede it.
+            _desc = getattr(item, "description", "") or ""
+            for m in re.finditer(r"\$\s?(\d[\d,]*\.\d{2})", _md):
+                _win = _md[m.end(): m.end() + 450]
+                if (re.search(r"(?i)add\s+to\s+(?:cart|bag|basket)|buy\s+now|\bquantity\b|\bqty\b|\bvolume\b|\bsize\b", _win)
+                        and _search._price_near_product(_md, m, _desc)):
+                    _lab.append(float(m.group(1).replace(",", "")))
+            _floor = 0.05 * float(getattr(item, "unit_price", 0) or 0)
+            _lab = [v for v in _lab if v >= _floor]
+            if _hard or not _lab:
+                c.match_type = "rejected"
+                c.rejected_reason = "login required for pricing (public pricing only)"
+                return
+            if not c.price:
+                c.price = min(_lab)
+            # the page DID show this price — don't let the "null extraction" branch
+            # below append "no price could be read off the product page" on top
+            if d.get("price") in (None, "", 0):
+                d["price"] = min(_lab)
+            c.price_unreliable = True
+            c.notes = ((c.notes + " · ") if c.notes else "") + (
+                f"login-pricing flag overridden — page labels a public price "
+                f"(${min(_lab):,.2f}) and never hides it behind a login; confirm on the page")
+    _h1 = re.search(r"(?m)^#\s+(.{6,160})$", getattr(c, "scraped_markdown", None) or "")
+    c.scraped_product_name = (d.get("product_name") or c.title
+                              or (_h1.group(1).strip() if _h1 else None)
+                              or getattr(c, "structured_name", None))
     c.scraped_variant = d.get("variant")
     ov = (getattr(c, "_ordered_variant", "") or item.variant or "").strip().lower()
     if ov:
